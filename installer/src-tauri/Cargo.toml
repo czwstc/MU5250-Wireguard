@@ -1,0 +1,42 @@
+[package]
+name = "mu5250-installer"
+version = "2.4.0"
+description = "Desktop installer for Open U60 Pro"
+authors = ["MU5250-OpenUI contributors"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "mu5250_installer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+process-runner = { path = "../../process-runner" }
+cbc = "0.1"
+cipher = { version = "0.4", features = ["block-padding", "alloc"] }
+des = "0.8"
+dirs = "6"
+flate2 = "1"
+hex = "0.4"
+md5 = "0.7"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "json", "multipart", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
+tar = "0.4"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tempfile = "3"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

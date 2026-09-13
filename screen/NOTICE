@@ -1,0 +1,20 @@
+OpenUI WireGuard Screen
+
+This standalone executable is licensed under GPL-3.0-or-later. It is a
+separate program from the MIT-licensed zte-agent and exchanges local messages.
+The Atomic DRM implementation in qpic.h is adapted from:
+  mu5250_tweaking/files/qpic_demo/qpic_drm_demo.c
+  https://github.com/amenekowo/mu5250_tweaking
+The upstream GPL license is preserved in LICENSE. UI, supervision and IPC
+integration were added for MU5250-OpenUI.
+
+OpenUI Bitmap is a bitmap-format conversion of GNU Unifont 17.0.05 (Plane 0).
+Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller,
+Johnnie Weaver, David Corbett, and other GNU Unifont contributors.
+The font is distributed under the SIL Open Font License 1.1; see FONT-LICENSE
+and FONT-COPYING. No system/vendor fonts are bundled.
+Source: https://unifoundry.com/unifont/index.html
+Pinned glyph source and reproducible conversion: font.py.
+
+Fork packaging and modifications: Copyright (c) 2026 ZweiChen and contributors.
+GPL-3.0-or-later.

@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install zig
+        run: |
+          pipx install ziglang
+          PIPX_BIN="$(pipx environment --value PIPX_BIN_DIR)"
+          ls -l "$PIPX_BIN"
+          # ziglang >= 0.16 ships the binary as python-zig; cargo-zigbuild expects zig
+          if [ ! -e "$PIPX_BIN/zig" ] && [ -e "$PIPX_BIN/python-zig" ]; then
+            ln -s "$PIPX_BIN/python-zig" "$PIPX_BIN/zig"
+          fi
+          echo "$PIPX_BIN" >> "$GITHUB_PATH"
+          "$PIPX_BIN/zig" version
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build zte-agent
+        run: cargo zigbuild --release --target aarch64-unknown-linux-musl -p zte-agent --locked
+
+      - name: Sanity-check binary
+        run: |
+          BIN=target/aarch64-unknown-linux-musl/release/zte-agent
+          file "$BIN"
+          readelf -h "$BIN" | grep -E 'Class|Machine|Type'
+          readelf -d "$BIN" || true
+          ls -l "$BIN"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zte-agent
+          path: target/aarch64-unknown-linux-musl/release/zte-agent
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Build dashboard
+        working-directory: web-app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package dist
+        run: tar czf dashboard-dist.tar.gz -C web-app/dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard-dist.tar.gz
+
+  publish:
+    needs: [agent, dashboard, checks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect assets and checksums
+        run: |
+          mkdir assets
+          cp artifacts/zte-agent/zte-agent assets/zte-agent
+          cp artifacts/dashboard-dist/dashboard-dist.tar.gz assets/
+          python3 - <<'PYTHON'
+          import os
+          import zipfile
+          from pathlib import Path
+          images = sorted((Path('docs/images') / ('installer-' + os.environ['GITHUB_REF_NAME'])).glob('*.png'))
+          assert len(images) == 5, 'Installer wireframes are incomplete'
+          with zipfile.ZipFile('assets/installer-wireframes.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for image in images: archive.write(image, image.name)
+          PYTHON
+          cd assets
+          sha256sum zte-agent dashboard-dist.tar.gz installer-wireframes.zip > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Release notes
+        run: |
+          if [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then
+            cp "docs/releases/${GITHUB_REF_NAME}.md" release-notes.md
+            exit 0
+          fi
+          cat > release-notes.md <<'EOF'
+          Pre-built artifacts for the ZTE U60 Pro (MU5250).
+
+          **Assets**
+
+          - `zte-agent` — agent binary (aarch64 musl). Deploy to `/data/zte-agent`,
+            or run `bash setup.sh` and choose the pre-built download.
+          - `dashboard-dist.tar.gz` — dashboard static build consumed by the
+            native installer. For terminal deployment, run `scripts/zharden.sh`
+            once to install the isolated dashboard server, then use
+            `deploy-dashboard.sh`; do not add a second ZTE uhttpd UCI instance.
+          - `sha256sums.txt` — SHA-256 checksums.
+
+          **Verify**
+
+          ```sh
+          sha256sum -c sha256sums.txt
+          ```
+          EOF
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          ARGS=(--draft --title "$TAG" --notes-file release-notes.md --generate-notes)
+          case "$TAG" in *-rc*) ARGS+=(--prerelease) ;; esac
+          gh release create "$TAG" "${ARGS[@]}" assets/*

@@ -1,0 +1,263 @@
+name: Desktop installer
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish packages to (leave blank for a build-only preflight)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      source_ref: ${{ inputs.release_tag || github.ref }}
+  publish:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            platform: macos-15
+            platform_tools: darwin
+            archive_arch: aarch64
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macos-x64
+            platform: macos-15-intel
+            platform_tools: darwin
+            archive_arch: x86_64
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+          - name: windows-x64
+            platform: windows-latest
+            platform_tools: windows
+            args: --bundles msi,nsis
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install frontend dependencies
+        working-directory: installer
+        run: npm ci
+
+      - name: Fetch bundled Android platform-tools
+        shell: bash
+        env:
+          RELEASE_SOURCE_REF: ${{ inputs.release_tag || github.ref }}
+        run: |
+          python scripts/prepare-installer-tools.py ${{ matrix.platform_tools }}
+          python scripts/check-release.py
+
+      - name: Import Apple Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Developer ID certificate configured; using ad-hoc signing"
+            exit 0
+          fi
+          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          security default-keychain -s "$RUNNER_TEMP/build.keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          security set-keychain-settings -t 3600 -u "$RUNNER_TEMP/build.keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$RUNNER_TEMP/build.keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          CERT_ID="$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          test -n "$CERT_ID"
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+
+      - name: Configure Apple notarization
+        if: runner.os == 'macOS'
+        env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARIZATION_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          NOTARIZATION_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          if [ -z "$NOTARIZATION_APPLE_ID" ] || [ -z "$NOTARIZATION_APPLE_PASSWORD" ] || [ -z "$NOTARIZATION_APPLE_TEAM_ID" ]; then
+            if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+              echo "Developer ID releases require complete notarization credentials" >&2
+              exit 1
+            fi
+            echo "No Apple signing identity configured; packages will be labelled ad-hoc and not notarized"
+            exit 0
+          fi
+          printf 'APPLE_ID=%s\n' "$NOTARIZATION_APPLE_ID" >> "$GITHUB_ENV"
+          printf 'APPLE_PASSWORD=%s\n' "$NOTARIZATION_APPLE_PASSWORD" >> "$GITHUB_ENV"
+          printf 'APPLE_TEAM_ID=%s\n' "$NOTARIZATION_APPLE_TEAM_ID" >> "$GITHUB_ENV"
+
+      - name: Configure optional Windows signing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: ./scripts/configure-windows-signing.ps1
+
+      - name: Wait for the application release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          for attempt in $(seq 1 120); do
+            gh release view "$RELEASE_TAG" >/dev/null 2>&1 && exit 0
+            sleep 10
+          done
+          echo "Release $RELEASE_TAG was not created in time" >&2
+          exit 1
+
+      - name: Build native installer
+        uses: tauri-apps/tauri-action@v1
+        with:
+          projectPath: installer
+          args: ${{ matrix.args }} ${{ env.WINDOWS_SIGNING_ARGS }}
+
+      - name: Package macOS app bundle as ZIP
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          DMG_PATH="$(find target -type f -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          MOUNT_POINT="$RUNNER_TEMP/open-u60-pro-dmg-${{ matrix.archive_arch }}"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_POINT" "$DMG_PATH"
+          trap 'hdiutil detach "$MOUNT_POINT"' EXIT
+          APP_PATH="$MOUNT_POINT/Open U60 Pro Installer.app"
+          test -d "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+          python3 scripts/check-installer-package.py --app "$APP_PATH"
+          VERSION="$(node -p "require('./installer/package.json').version")"
+          ARCHIVE="Open-U60-Pro-Installer_${VERSION}_${{ matrix.archive_arch }}.app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE"
+          VERIFY_DIR="$RUNNER_TEMP/open-u60-pro-zip-check-${{ matrix.archive_arch }}"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k "$ARCHIVE" "$VERIFY_DIR"
+          codesign --verify --deep --strict "$VERIFY_DIR/Open U60 Pro Installer.app"
+          shasum -a 256 "$ARCHIVE"
+          echo "MACOS_ZIP=$ARCHIVE" >> "$GITHUB_ENV"
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT
+
+      - name: Package Windows portable ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = node -p "require('./installer/package.json').version"
+          $exe = Get-ChildItem "target/release/*.exe" | Where-Object { $_.Name -notlike '*-setup*' } | Select-Object -First 1
+          if (-not $exe) { throw 'Built application executable not found under target/release' }
+          $stage = Join-Path $env:RUNNER_TEMP 'open-u60-pro-portable'
+          New-Item -ItemType Directory -Force "$stage/platform-tools" | Out-Null
+          Copy-Item $exe.FullName (Join-Path $stage 'Open U60 Pro Installer.exe')
+          Copy-Item 'installer/assets/platform-tools/*' "$stage/platform-tools" -Recurse
+          $archive = "Open-U60-Pro-Installer_${version}_x64-portable.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $archive
+          python scripts/check-installer-package.py --windows-exe (Join-Path $stage 'Open U60 Pro Installer.exe')
+          Get-FileHash $archive -Algorithm SHA256
+          "WINDOWS_ZIP=$archive" >> $env:GITHUB_ENV
+
+      - name: Check Windows setup installation and removal
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-setup.ps1
+
+      - name: Remove temporary signing credentials
+        if: always()
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/developer-id.p12"
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -File scripts/configure-windows-signing.ps1 -Cleanup
+          fi
+
+      - name: Upload manually triggered package
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-u60-pro-${{ matrix.name }}
+          path: |
+            target/**/bundle/**/*
+            Open-U60-Pro-Installer_*.app.zip
+            Open-U60-Pro-Installer_*-portable.zip
+          if-no-files-found: error
+
+      - name: Publish verified macOS packages
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          DMG_PATH="$(find target -type f -name '*.dmg' -print -quit)"
+          gh release upload "$RELEASE_TAG" "$DMG_PATH" "$MACOS_ZIP" --clobber
+
+      - name: Publish verified Windows packages
+        if: runner.os == 'Windows' && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" target/release/bundle/nsis/*-setup.exe target/release/bundle/msi/*.msi "$WINDOWS_ZIP" --clobber
+
+  checksums:
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - name: Verify complete release and checksum every asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --dir release-assets
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root = Path('release-assets')
+          assert (root / 'zte-agent').is_file()
+          assert (root / 'dashboard-dist.tar.gz').is_file()
+          for pattern, count in [('*.dmg', 2), ('*.app.zip', 2), ('*.msi', 1), ('*.exe', 1), ('*-portable.zip', 1)]:
+              assert len(list(root.glob(pattern))) == count, f'Missing or unexpected {pattern} assets'
+          files = sorted(p for p in root.iterdir() if p.name != 'sha256sums.txt')
+          assert all(p.is_file() and p.stat().st_size > 0 for p in files)
+          Path('sha256sums.txt').write_text(''.join(
+              f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in files))
+          PY
+          gh release upload "$RELEASE_TAG" sha256sums.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

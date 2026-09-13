@@ -1,0 +1,20 @@
+MU5250-OpenUI-Wireguard
+Copyright (c) 2026 ZweiChen and contributors.
+
+This project is a fork of MU5250-OpenUI, with integrated WireGuard gateway
+and touchscreen controls. It uses OpenUI's existing authentication, API,
+deployment flow and management interface. It is not an independent VPN app.
+
+MIT-licensed OpenUI components retain their original notices:
+Copyright (c) 2026 David Klasens
+Copyright (c) 2025-present Jesther Silvestre (portions from open-u60-pro).
+See LICENSE and licenses/ for the preserved texts.
+Source: https://github.com/dklasens/MU5250-OpenUI
+Base checkout: fabaf8b53678dc50e3c3fa2fa3de8b51061967cc, with local WireGuard
+and screen additions included. Source copied on 2026-09-13.
+
+The separately built screen/panel.c and screen/qpic.h are GPL-3.0-or-later,
+including adapted DRM code from https://github.com/amenekowo/mu5250_tweaking.
+See screen/LICENSE and screen/NOTICE. The root MIT license does not relicense
+these GPL files. The GNU Unifont bitmap uses SIL OFL 1.1; see screen/FONT-LICENSE
+and screen/FONT-COPYING. Dependencies retain their own respective licenses.

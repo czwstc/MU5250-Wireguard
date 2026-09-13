@@ -1,0 +1,74 @@
+name: Safety and regression checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      source_ref:
+        required: false
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  agent-and-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
+      - run: cargo fmt --all --check
+      - run: cargo test -p zte-agent -p process-runner --locked
+      - run: cargo clippy -p zte-agent -p process-runner --all-targets --locked -- -D warnings
+      - run: python3 -m unittest discover -s tests -v
+      - run: python3 scripts/check-api-contract.py
+      - run: python3 scripts/check-device-secrets.py
+      - run: python3 scripts/check-release.py
+        env:
+          RELEASE_SOURCE_REF: ${{ inputs.source_ref || github.ref }}
+      - run: npm ci && npm run build && npm run lint && npm test
+        working-directory: web-app
+      - run: |
+          for script in setup.sh deploy.sh deploy-dashboard.sh scripts/zharden.sh scripts/build-offline-bundle.sh scripts/device/*.sh; do
+            bash -n "$script"
+          done
+  native-installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+      - run: npm ci && npm run build && npm test
+        working-directory: installer
+      - name: Fetch native installer resources
+        shell: bash
+        env:
+          PLATFORM_TOOLS: ${{ runner.os == 'macOS' && 'darwin' || 'windows' }}
+        run: |
+          python scripts/prepare-installer-tools.py "$PLATFORM_TOOLS"
+      - run: cargo test -p mu5250-installer -p process-runner --locked
+      - run: cargo clippy -p mu5250-installer -p process-runner --all-targets --locked -- -D warnings
