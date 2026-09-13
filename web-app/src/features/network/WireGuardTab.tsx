@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../data/api'
-import type { Client, WireGuardStatus } from '../../types'
-import { Button, Select, Toggle } from '../../ui/controls'
+import type { Client, WireGuardStatus, WireGuardProfileAction } from '../../types'
+import { Button, Input, Select, Toggle } from '../../ui/controls'
 import { Card, Chip, Stat } from '../../ui/primitives'
-import { toast, toastError } from '../../ui/feedback'
+import { confirm, toast, toastError } from '../../ui/feedback'
 import ScreenControl from './ScreenControl'
 
 function bytes(n: number) {
@@ -17,6 +17,9 @@ export default function WireGuardTab() {
   const [mode, setMode] = useState<'all' | 'selected'>('all')
   const [macs, setMacs] = useState<string[]>([])
   const [config, setConfig] = useState('')
+  const [profileName, setProfileName] = useState('')
+  const [profileId, setProfileId] = useState('')
+  const [renameDraft, setRenameDraft] = useState<{id: number; name: string; revision: number} | null>(null)
   const [busy, setBusy] = useState(false)
   const initialized = useRef(false)
   const editing = useRef(false)
@@ -49,27 +52,55 @@ export default function WireGuardTab() {
   }, [refresh])
 
   async function save(enabled: boolean, disableOnly = false) {
+    if (busyRef.current) return
     generation.current += 1
     busyRef.current = true; setBusy(true); setError('')
     try {
-      const s = await api.wireguardSet(disableOnly && status ? { enabled: false, mode: status.mode, macs: status.macs, expected_revision: status.revision } : { enabled, mode, macs, expected_revision: editRevision.current, config_text: config.trim() || undefined })
+      const s = await api.wireguardSet(disableOnly && status ? { enabled: false, mode: status.mode, macs: status.macs, expected_revision: status.revision } : { enabled, mode, macs, expected_revision: editRevision.current })
       if (!mounted.current) return
-      setStatus(s); setMode(s.mode); setMacs(s.macs); setConfig(''); editRevision.current = s.revision; editing.current = false
+      setStatus(s); setMode(s.mode); setMacs(s.macs); editRevision.current = s.revision; editing.current = false
       toast(enabled ? 'WireGuard policy applied. Waiting for peer handshake.' : 'Saved. All devices use the normal network.')
     } catch (e) { if (mounted.current) { setError(e instanceof Error ? e.message : 'Unable to apply configuration'); toastError(e, 'WireGuard update failed') } }
+    finally { busyRef.current = false; if (mounted.current) setBusy(false) }
+  }
+  async function changeProfile(action: WireGuardProfileAction, expectedRevision?: number) {
+    if (!status || busyRef.current) return
+    if (action.action === 'activate' && status.enabled && !(await confirm({title:'Switch WireGuard profile?',body:'Tunnel traffic will briefly pause. Device routing choices will be preserved.',confirmLabel:'Switch & apply'}))) return
+    if (action.action === 'delete' && !(await confirm({title:'Delete saved profile?',body:'Its private configuration will be removed.',confirmLabel:'Delete',danger:true}))) return
+    generation.current += 1
+    busyRef.current = true; setBusy(true); setError('')
+    try {
+      const s = await api.wireguardSet({expected_revision: expectedRevision ?? (editing.current ? editRevision.current : status.revision), profile: action})
+      if (!mounted.current) return
+      setStatus(s); editRevision.current = s.revision
+      // Partial profile actions never discard unsaved device choices.
+      if (!editing.current) { setMode(s.mode); setMacs(s.macs) }
+      if (action.action === 'save') { setConfig(''); setProfileName(''); setProfileId(String(s.profiles[s.profiles.length - 1].id)) }
+      if (action.action === 'delete') setProfileId('')
+      toast(action.action === 'activate' ? (s.enabled ? 'Profile applied. Waiting for peer handshake.' : 'Profile selected. WireGuard remains off.') : 'Saved profiles updated.')
+      return true
+    } catch (e) { if (mounted.current) { setError(e instanceof Error ? e.message : 'Unable to update profiles'); toastError(e, 'Profile update failed') } }
     finally { busyRef.current = false; if (mounted.current) setBusy(false) }
   }
   async function importFile(file?: File) {
     if (!file) return
     if (file.size > 16384) { toast('Configuration must be under 16 KiB', 'err'); return }
-    try { editing.current = true; setConfig(await file.text()) } catch (e) { toastError(e, 'Unable to read configuration') }
+    const current = generation.current
+    try {
+      const text = await file.text()
+      if (!mounted.current || busyRef.current || current !== generation.current) return
+      setConfig(text); setProfileName(file.name.replace(/\.(conf|txt)$/i, '').slice(0, 48))
+    } catch (e) { toastError(e, 'Unable to read configuration') }
   }
+  const profiles = status?.profiles ?? []
+  const picked = profiles.find(p => String(p.id) === profileId) ?? profiles.find(p => p.id === status?.active_profile) ?? profiles[0]
+  const active = profiles.find(p => p.id === status?.active_profile)
   const known = new Map(clients.filter(c => c.mac).map(c => [c.mac.toLowerCase(), c]))
   for (const m of macs) if (!known.has(m)) known.set(m, { mac: m, hostname: 'Saved device (offline)' } as Client)
   const rows = [...known.values()]
   const selected = (m: string) => mode === 'all' ? !macs.includes(m) : macs.includes(m)
-  const dirty = !!config.trim() || mode !== status?.mode || [...macs].sort().join() !== [...(status?.macs ?? [])].sort().join()
-  const ready = !!status?.kernel_supported && !!status?.tools_installed && (!!status?.has_config || !!config.trim())
+  const dirty = mode !== status?.mode || [...macs].sort().join() !== [...(status?.macs ?? [])].sort().join()
+  const ready = !!status?.kernel_supported && !!status?.tools_installed && !!status?.has_config
   const summary = status?.connected ? 'Recent handshake' : status?.enabled ? status.error ? 'Needs attention' : 'Waiting for handshake' : 'Off'
 
   return (
@@ -104,11 +135,37 @@ export default function WireGuardTab() {
 
       <ScreenControl />
 
-      <Card title={status?.has_config ? 'Replace client configuration' : 'Import client configuration'}>
+      <Card title="Saved configurations" action={<Chip>{profiles.length} / 5</Chip>}>
+        <div className="space-y-3">
+          <p className="text-xs text-ink2">Current profile: <strong className="text-ink">{active?.name ?? 'None selected'}</strong>. Device routing choices apply to every profile.</p>
+          {profiles.length > 0 ? <>
+            <Select aria-label="Saved WireGuard configuration" value={picked ? String(picked.id) : ''} disabled={busy} onChange={e => { setProfileId(e.target.value); setRenameDraft(null) }}>
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.name}{p.id === status?.active_profile ? ' (current)' : ''}</option>)}
+            </Select>
+            {picked && <p className="break-all text-xs text-ink3">{picked.endpoint} · {picked.address}</p>}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" disabled={busy || !picked || picked.id === status?.active_profile} onClick={() => picked && void changeProfile({action:'activate',id:picked.id})}>{status?.enabled ? 'Switch & apply' : 'Use configuration'}</Button>
+              <Button variant="outline" disabled={busy || !picked} onClick={() => picked && status && setRenameDraft({id:picked.id,name:picked.name,revision:status.revision})}>Rename</Button>
+              <Button variant="danger" disabled={busy || !picked || (!!status?.enabled && picked.id === status.active_profile)} onClick={() => picked && void changeProfile({action:'delete',id:picked.id})}>Delete</Button>
+            </div>
+            {renameDraft !== null && <div className="flex flex-wrap items-center gap-2">
+              <Input aria-label="Rename profile" value={renameDraft.name} maxLength={48} disabled={busy} onChange={e => setRenameDraft({...renameDraft,name:e.target.value})} className="min-w-0 flex-1" />
+              <Button disabled={busy || !renameDraft.name.trim()} onClick={() => { void changeProfile({action:'rename',id:renameDraft.id,name:renameDraft.name}, renameDraft.revision).then(ok => { if (ok) setRenameDraft(null) }) }}>Save name</Button>
+              <Button variant="ghost" disabled={busy} onClick={() => setRenameDraft(null)}>Cancel</Button>
+            </div>}
+            <p className="text-xs text-ink3">Switching keeps WireGuard on or off as it is. Turn it off or switch to another profile before deleting the running profile.</p>
+          </> : <p className="text-sm text-ink2">No saved configurations. Import your first profile below.</p>}
+        </div>
+      </Card>
+
+      <Card title="Add client configuration">
         <div className="space-y-3">
           <p className="text-xs leading-relaxed text-ink2">Import a standard single-peer .conf file with an IPv4 address and AllowedIPs = 0.0.0.0/0. MTU 1280 is recommended (supported: 1280–1380). Shell hooks are not accepted. Saved private keys are never displayed again.</p>
-          <input aria-label="Import WireGuard configuration file" type="file" accept=".conf,.txt" disabled={busy} className="block w-full text-xs text-ink2 file:mr-3 file:rounded-lg file:border-0 file:bg-surface2 file:px-3 file:py-2 file:text-ink" onChange={e => { void importFile(e.target.files?.[0]); e.target.value = '' }} />
-          <textarea aria-label="WireGuard client configuration" spellCheck={false} autoComplete="off" disabled={busy} value={config} onChange={e => { editing.current = true; setConfig(e.target.value) }} rows={8} placeholder={status?.has_config ? 'A configuration is saved. Leave this empty to keep it, or paste a replacement.' : '[Interface]\nPrivateKey = …\nAddress = 10.0.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = …\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0'} className="w-full resize-y rounded-lg border border-line/15 bg-surface2/50 p-3 font-mono text-xs text-ink outline-none focus:border-accent" />
+          <input aria-label="Import WireGuard configuration file" type="file" accept=".conf,.txt" disabled={busy || profiles.length >= 5} className="block w-full text-xs text-ink2 file:mr-3 file:rounded-lg file:border-0 file:bg-surface2 file:px-3 file:py-2 file:text-ink" onChange={e => { void importFile(e.target.files?.[0]); e.target.value = '' }} />
+          <label className="block text-xs font-medium text-ink2">Profile name<Input aria-label="New profile name" value={profileName} maxLength={48} disabled={busy || profiles.length >= 5} onChange={e => setProfileName(e.target.value)} placeholder="e.g. Home VPN" className="mt-1" /></label>
+          <textarea aria-label="WireGuard client configuration" spellCheck={false} autoComplete="off" disabled={busy || profiles.length >= 5} value={config} onChange={e => setConfig(e.target.value)} rows={6} placeholder={ '[Interface]\nPrivateKey = …\nAddress = 10.0.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = …\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0'} className="w-full resize-y rounded-lg border border-line/15 bg-surface2/50 p-3 font-mono text-xs text-ink outline-none focus:border-accent" />
+          <Button variant="primary" loading={busy} disabled={!status || profiles.length >= 5 || !profileName.trim() || !config.trim()} onClick={() => void changeProfile({action:'save',name:profileName,config_text:config})}>Save new profile</Button>
+          <p className="text-xs text-ink2">{profiles.length >= 5 ? 'All 5 slots are in use. Delete a profile before adding another.' : 'Up to 5 profiles. Saving a backup does not switch the current tunnel. The first profile is selected automatically, with WireGuard still off.'}</p>
           <p className="text-xs text-ink3">Only IPv4 traffic is tunneled in this version. IPv6 internet and IPv6 DNS to the router are blocked for tunnel devices to prevent direct bypass. Unselected devices keep normal IPv4 and IPv6 access.</p>
         </div>
       </Card>
@@ -132,9 +189,9 @@ export default function WireGuardTab() {
           </div>
           <p className="rounded-lg bg-surface2/60 p-3 text-xs leading-relaxed text-ink2">When enabled, tunnel devices cannot fall back to the normal network if the VPN stops responding. DNS over IPv4 is sent through the tunnel. Router management stays accessible. Applying changes briefly pauses forwarded traffic while rules are replaced. After changing a device’s route, reconnect its apps or Wi-Fi so existing connections can restart.</p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" loading={busy} disabled={!status || (!status.has_config && !config.trim())} onClick={() => void save(status?.enabled ?? false)}>Save {status?.enabled ? '& apply' : 'configuration'}</Button>
+            <Button variant="primary" loading={busy} disabled={!status || !status.has_config} onClick={() => void save(status?.enabled ?? false)}>Save {status?.enabled ? '& apply' : 'device choices'}</Button>
             {!status?.enabled && <Button variant="outline" disabled={busy || !ready} onClick={() => void save(true)}>Save & enable</Button>}
-            <Button variant="ghost" disabled={busy} onClick={() => { if (!editing.current || window.confirm('Discard unsaved changes and reload the latest settings?')) { editing.current = false; setConfig(''); void refresh() } }}>Refresh</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => { if ((!editing.current && !config && !profileName && renameDraft === null) || window.confirm('Discard unsaved changes and reload the latest settings?')) { editing.current = false; setConfig(''); setProfileName(''); setRenameDraft(null); void refresh() } }}>Refresh</Button>
           </div>
         </div>
       </Card>

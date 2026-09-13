@@ -394,12 +394,51 @@ def merge_into(slot):
 
 
 def wireguard_set(body):
-    current = STATE["wireguard"]
-    current.update({k: body[k] for k in ("enabled", "mode", "macs") if k in body})
-    if body.get("config_text"):
-        current.update({"has_config": True, "endpoint": "vpn.example.com:51820", "address": "10.0.0.2/32", "dns": "1.1.1.1", "mtu": 1280})
+    import copy
+    current = copy.deepcopy(STATE["wireguard"])
+    profiles = current["profiles"]
+    action = body.get("profile")
+    if action:
+        kind = action.get("action")
+        picked = next((p for p in profiles if p["id"] == action.get("id")), None)
+        if kind in ("save", "rename"):
+            name = action.get("name", "").strip()
+            if not name or len(name) > 48 or any(ord(c) < 32 for c in name):
+                raise ValueError("Profile name must contain 1–48 characters without control characters")
+            if any(p["name"].lower() == name.lower() and (kind == "save" or p is not picked) for p in profiles):
+                raise ValueError("A profile with this name already exists")
+        if kind == "save":
+            if len(profiles) >= 5:
+                raise ValueError("A maximum of 5 profiles can be saved; delete one first")
+            # Demo stores public metadata only; never keep pasted private keys.
+            fields = dict(line.split("=", 1) for line in action.get("config_text", "").splitlines() if "=" in line)
+            fields = {k.strip(): v.strip() for k, v in fields.items()}
+            if not all(k in fields for k in ("Address", "Endpoint", "PrivateKey", "PublicKey")):
+                raise ValueError("Invalid demo WireGuard configuration")
+            picked = {"id": max((p["id"] for p in profiles), default=0)+1, "name": name,
+                      "endpoint": fields["Endpoint"], "address": fields["Address"]}
+            profiles.append(picked)
+            if current["active_profile"] is None: current["active_profile"] = picked["id"]
+        elif not picked:
+            raise ValueError("Profile not found")
+        elif kind == "activate": current["active_profile"] = picked["id"]
+        elif kind == "rename": picked["name"] = name
+        elif kind == "delete":
+            if current["active_profile"] == picked["id"]:
+                if current["enabled"]: raise ValueError("Switch profiles or turn WireGuard off before deleting the active profile")
+                current["active_profile"] = None
+            profiles.remove(picked)
+        else: raise ValueError("Unknown profile action")
+    else:
+        current.update({k: body[k] for k in ("enabled", "mode", "macs") if k in body})
+    active = next((p for p in profiles if p["id"] == current["active_profile"]), None)
+    current.update({"has_config": active is not None, "endpoint": active["endpoint"] if active else None,
+                    "address": active["address"] if active else None, "dns": "1.1.1.1" if active else None, "mtu": 1280 if active else None})
     current["revision"] += 1
     current["interface_up"] = bool(current["enabled"])
+    current["connected"] = bool(current["enabled"])
+    current["latest_handshake"] = int(time.time()) - 15 if current["enabled"] else 0
+    STATE["wireguard"] = current
     return current
 
 
@@ -417,7 +456,7 @@ ROUTES_PUT = {
 }
 
 
-STATE["wireguard"] = {"revision": 0, "enabled": False, "mode": "all", "macs": [], "has_config": False,
+STATE["wireguard"] = {"profiles": [], "active_profile": None, "max_profiles": 5, "revision": 0, "enabled": False, "mode": "all", "macs": [], "has_config": False,
       "kernel_supported": True, "tools_installed": True, "interface_up": False, "connected": False,
       "latest_handshake": 0, "rx_bytes": 0, "tx_bytes": 0, "error": None, "endpoint": None,
       "address": None, "dns": None, "mtu": None, "ipv6_policy": "blocked_for_tunnel_devices"}
@@ -558,7 +597,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"ok": False, "error": "Configuration changed; refresh before saving"}, 409)
         fn = ROUTES_PUT.get(path)
         if fn:
-            return self._send({"ok": True, "data": fn(body)})
+            try:
+                return self._send({"ok": True, "data": fn(body)})
+            except ValueError as error:
+                return self._send({"ok": False, "error": str(error)}, 400)
         return self._send({"ok": True, "data": {}})
 
     def do_DELETE(self):
@@ -584,6 +626,9 @@ def main():
             'macs': ['02:00:00:00:00:03', '02:00:00:00:00:06'], 'interface_up': True,
             'connected': True, 'rx_bytes': 134217728, 'tx_bytes': 25165824,
             'endpoint': 'vpn.example.com:51820', 'address': '10.8.0.2/32', 'dns': '1.1.1.1', 'mtu': 1280})
+        STATE['wireguard'].update({'active_profile': 1, 'profiles': [
+            {'id': 1, 'name': 'Home VPN', 'endpoint': 'vpn.example.com:51820', 'address': '10.8.0.2/32'},
+            {'id': 2, 'name': 'Travel VPN', 'endpoint': 'travel.example.com:51820', 'address': '10.9.0.2/32'}]})
         def wg_demo_status():
             value = dict(STATE['wireguard'])
             value['connected'] = bool(value['enabled'])

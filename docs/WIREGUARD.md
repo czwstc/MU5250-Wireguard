@@ -4,6 +4,49 @@ Network → WireGuard manages one kernel WireGuard client tunnel. Import a stand
 single-peer `.conf`, save it, choose devices and enable. A new installation is off.
 The router itself keeps its original WAN route; forwarded devices use the policy.
 
+## Saved configurations (up to 5)
+
+In **Network → WireGuard**, import a `.conf` and give it a unique name under
+**Add client configuration**, then click **Save new profile**. A filename is used
+as the initial name when importing a file. Names allow 1–48 characters.
+
+**Saved configurations** shows the selected profile and the number of used slots.
+Choose a saved entry, then click **Switch & apply** while enabled, or **Use
+configuration** while disabled. Switching keeps the tunnel's enabled/disabled
+state and all device routing choices. Only one profile is active at a time.
+Saving a backup, renaming, or deleting an inactive profile does not rebuild the
+network rules. The first saved profile is selected automatically but is not enabled.
+
+Rename or delete entries here. At five profiles, both the interface and backend
+reject additions until a slot is freed. The active profile cannot be deleted
+while WireGuard is running. Deleting it while off clears the selection; another
+profile is not silently selected. Switching a running tunnel briefly pauses traffic;
+apply or persistence failures attempt to restore the previous tunnel. A handshake
+must be checked again after switching; a successful apply alone is not an internet test.
+
+Existing single-configuration state appears as **Current configuration**, with
+no network change on read. The next save persists the new profile format in the
+same root-only `config.json`. Public status includes only profile IDs, names,
+endpoints and addresses; saved keys are never sent to the web page or small screen.
+Before downgrading to an older agent, restore its matching configuration backup:
+older agents cannot read the added profile fields. Update the agent and dashboard together.
+
+### Profile API
+
+Authenticated `PUT /api/wireguard`, with the latest `expected_revision` and exactly
+one `profile` action. These requests cannot also change enabled/device settings:
+
+```json
+{"expected_revision":7,"profile":{"action":"save","name":"Travel VPN","config_text":"<single-peer client configuration>"}}
+{"expected_revision":8,"profile":{"action":"activate","id":2}}
+{"expected_revision":9,"profile":{"action":"rename","id":2,"name":"Office VPN"}}
+{"expected_revision":10,"profile":{"action":"delete","id":1}}
+```
+
+GET/PUT status adds `profiles`, `active_profile` (ID or null), and `max_profiles: 5`.
+Stale revisions return 409. The small screen continues to control the current
+profile and shared device policy; profile import and switching are on the web page.
+
 ## Device selection
 
 - **All devices:** all current and future `br-lan` clients use the tunnel. Unchecking

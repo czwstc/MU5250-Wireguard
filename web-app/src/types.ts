@@ -394,7 +394,21 @@ export interface HomeData {
   thermal: ThermalInfo | null
 }
 
+export interface WireGuardProfile {
+  id: number
+  name: string
+  endpoint: string
+  address: string
+}
+export type WireGuardProfileAction =
+  | { action: 'save'; name: string; config_text: string }
+  | { action: 'activate'; id: number }
+  | { action: 'rename'; id: number; name: string }
+  | { action: 'delete'; id: number }
 export interface WireGuardStatus {
+  profiles: WireGuardProfile[]
+  active_profile: number | null
+  max_profiles: number
   revision: number
   enabled: boolean
   mode: 'all' | 'selected'
@@ -416,9 +430,10 @@ export interface WireGuardStatus {
 }
 export interface WireGuardUpdate {
   expected_revision?: number
-  enabled: boolean
-  mode: 'all' | 'selected'
-  macs: string[]
+  profile?: WireGuardProfileAction
+  enabled?: boolean
+  mode?: 'all' | 'selected'
+  macs?: string[]
   config_text?: string
 }
 

@@ -16,5 +16,5 @@ and FONT-COPYING. No system/vendor fonts are bundled.
 Source: https://unifoundry.com/unifont/index.html
 Pinned glyph source and reproducible conversion: font.py.
 
-Fork packaging and modifications: Copyright (c) 2026 ZweiChen and contributors.
+Fork packaging and modifications: Copyright (c) 2026 ZweiChen.
 GPL-3.0-or-later.

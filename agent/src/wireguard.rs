@@ -27,6 +27,8 @@ struct Settings {
     mode: String,
     macs: Vec<String>,
     tunnel: Option<Tunnel>,
+    profiles: Vec<Profile>,
+    active_profile: Option<u64>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -36,10 +38,12 @@ impl Default for Settings {
             mode: "all".into(),
             macs: vec![],
             tunnel: None,
+            profiles: vec![],
+            active_profile: None,
         }
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Tunnel {
     private_key: String,
     public_key: String,
@@ -50,6 +54,118 @@ struct Tunnel {
     mtu: u16,
     keepalive: u16,
 }
+const MAX_PROFILES: usize = 5;
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Profile {
+    id: u64,
+    name: String,
+    tunnel: Tunnel,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum ProfileAction {
+    Save { name: String, config_text: String },
+    Activate { id: u64 },
+    Rename { id: u64, name: String },
+    Delete { id: u64 },
+}
+// Legacy single-tunnel files gain a profile without changing revision or network state.
+fn migrate(s: &mut Settings) {
+    if s.profiles.is_empty() && s.active_profile.is_none() {
+        if let Some(tunnel) = &s.tunnel {
+            s.profiles.push(Profile {
+                id: 1,
+                name: "Current configuration".into(),
+                tunnel: tunnel.clone(),
+            });
+            s.active_profile = Some(1);
+        }
+    }
+}
+fn profile_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 48 || name.chars().any(char::is_control) {
+        return Err("Profile name must contain 1–48 characters without control characters".into());
+    }
+    Ok(name.into())
+}
+fn profile_edit(s: &mut Settings, action: ProfileAction) -> Result<(), String> {
+    match action {
+        ProfileAction::Save { name, config_text } => {
+            if s.profiles.len() >= MAX_PROFILES {
+                return Err("A maximum of 5 profiles can be saved; delete one first".into());
+            }
+            let name = profile_name(&name)?;
+            if s.profiles
+                .iter()
+                .any(|p| p.name.to_lowercase() == name.to_lowercase())
+            {
+                return Err("A profile with this name already exists".into());
+            }
+            let tunnel = parse(&config_text)?;
+            let id = s
+                .profiles
+                .iter()
+                .map(|p| p.id)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or("Profile IDs exhausted")?;
+            if s.active_profile.is_none() {
+                s.active_profile = Some(id);
+                s.tunnel = Some(tunnel.clone());
+            }
+            s.profiles.push(Profile { id, name, tunnel });
+        }
+        ProfileAction::Activate { id } => {
+            let p = s
+                .profiles
+                .iter()
+                .find(|p| p.id == id)
+                .ok_or("Profile not found")?;
+            s.tunnel = Some(p.tunnel.clone());
+            s.active_profile = Some(id);
+        }
+        ProfileAction::Rename { id, name } => {
+            let name = profile_name(&name)?;
+            if s.profiles
+                .iter()
+                .any(|p| p.id != id && p.name.to_lowercase() == name.to_lowercase())
+            {
+                return Err("A profile with this name already exists".into());
+            }
+            s.profiles
+                .iter_mut()
+                .find(|p| p.id == id)
+                .ok_or("Profile not found")?
+                .name = name;
+        }
+        ProfileAction::Delete { id } => {
+            if !s.profiles.iter().any(|p| p.id == id) {
+                return Err("Profile not found".into());
+            }
+            if s.active_profile == Some(id) {
+                if s.enabled {
+                    return Err(
+                        "Switch profiles or turn WireGuard off before deleting the active profile"
+                            .into(),
+                    );
+                }
+                s.active_profile = None;
+                s.tunnel = None;
+            }
+            s.profiles.retain(|p| p.id != id);
+        }
+    }
+    Ok(())
+}
+fn same_network(a: &Settings, b: &Settings) -> bool {
+    a.enabled == b.enabled && a.mode == b.mode && a.macs == b.macs && a.tunnel == b.tunnel
+}
+fn profile_status(s: &Settings) -> Value {
+    json!(s.profiles.iter().map(|p| json!({"id":p.id,"name":p.name,"endpoint":p.tunnel.endpoint,"address":p.tunnel.address})).collect::<Vec<_>>())
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Update {
@@ -59,6 +175,7 @@ struct Update {
     config_text: Option<String>,
     expected_revision: Option<u64>,
     devices: Option<Vec<DeviceChoice>>,
+    profile: Option<ProfileAction>,
 }
 
 #[derive(Deserialize)]
@@ -80,7 +197,21 @@ fn edited(old: &Settings, u: Update) -> Result<Settings, String> {
     if u.devices.is_some() && (u.mode.is_some() || u.macs.is_some()) {
         return Err("Cannot combine device changes with a routing mode change".into());
     }
+    if u.profile.is_some()
+        && (u.expected_revision.is_none()
+            || u.enabled.is_some()
+            || u.mode.is_some()
+            || u.macs.is_some()
+            || u.devices.is_some()
+            || u.config_text.is_some())
+    {
+        return Err(
+            "Profile actions require expected_revision and cannot be combined with routing changes"
+                .into(),
+        );
+    }
     let mut next = old.clone();
+    migrate(&mut next);
     next.revision = old
         .revision
         .checked_add(1)
@@ -110,7 +241,26 @@ fn edited(old: &Settings, u: Update) -> Result<Settings, String> {
         }
     }
     if let Some(text) = u.config_text.filter(|s| !s.trim().is_empty()) {
-        next.tunnel = Some(parse(&text)?);
+        let tunnel = parse(&text)?;
+        if let Some(id) = next.active_profile {
+            next.profiles
+                .iter_mut()
+                .find(|p| p.id == id)
+                .ok_or("Active profile not found")?
+                .tunnel = tunnel.clone();
+            next.tunnel = Some(tunnel);
+        } else {
+            profile_edit(
+                &mut next,
+                ProfileAction::Save {
+                    name: format!("Configuration {}", old.revision + 1),
+                    config_text: text,
+                },
+            )?;
+        }
+    }
+    if let Some(action) = u.profile {
+        profile_edit(&mut next, action)?;
     }
     next.macs.sort();
     next.macs.dedup();
@@ -233,6 +383,32 @@ fn validate_tunnel(t: &Tunnel) -> Result<(), String> {
     Ok(())
 }
 fn validate(s: &Settings) -> Result<(), String> {
+    if s.profiles.len() > MAX_PROFILES {
+        return Err("Too many saved WireGuard profiles".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    for p in &s.profiles {
+        if p.id == 0
+            || !ids.insert(p.id)
+            || profile_name(&p.name)? != p.name
+            || !names.insert(p.name.to_lowercase())
+        {
+            return Err("Invalid or duplicate saved profile".into());
+        }
+        validate_tunnel(&p.tunnel)?;
+    }
+    if let Some(id) = s.active_profile {
+        if !s
+            .profiles
+            .iter()
+            .any(|p| p.id == id && Some(&p.tunnel) == s.tunnel.as_ref())
+        {
+            return Err("Active profile does not match the saved tunnel".into());
+        }
+    } else if !s.profiles.is_empty() && s.tunnel.is_some() {
+        return Err("Saved tunnel is missing its active profile".into());
+    }
     if s.mode != "all" && s.mode != "selected" {
         return Err("Invalid routing mode".into());
     }
@@ -250,8 +426,9 @@ fn validate(s: &Settings) -> Result<(), String> {
 fn load() -> Result<Settings, String> {
     match fs::read(CONFIG) {
         Ok(b) => {
-            let s: Settings = serde_json::from_slice(&b)
+            let mut s: Settings = serde_json::from_slice(&b)
                 .map_err(|_| "Saved WireGuard configuration is invalid")?;
+            migrate(&mut s);
             validate(&s)?;
             Ok(s)
         }
@@ -486,7 +663,7 @@ fn response(s: &Settings) -> Value {
             Some("Tunnel policy is incomplete; automatic recovery is pending".into())
         }
     });
-    json!({"revision":s.revision,"enabled":s.enabled,"mode":s.mode,"macs":s.macs,"has_config":s.tunnel.is_some(),
+    json!({"profiles":profile_status(s),"active_profile":s.active_profile,"max_profiles":MAX_PROFILES,"revision":s.revision,"enabled":s.enabled,"mode":s.mode,"macs":s.macs,"has_config":s.tunnel.is_some(),
         "kernel_supported":Path::new("/sys/module/wireguard").exists(),"tools_installed":Path::new(WG).exists(),
         "interface_up":interface,"connected":s.enabled && healthy && interface && handshake>0 && now.saturating_sub(handshake)<180,
         "latest_handshake":handshake,"rx_bytes":fields.get(1).and_then(|v|v.parse::<u64>().ok()).unwrap_or(0),
@@ -501,6 +678,29 @@ pub fn get() -> (u16, Value) {
         Err(e) => (500, json!({"ok":false,"error":e})),
     }
 }
+// Persist the selected profile only after applying it. Keep the transition guard
+// in place when the previous policy cannot be restored.
+fn commit_change(
+    old: &Settings,
+    next: &Settings,
+    mut apply: impl FnMut(&Settings) -> Result<(), String>,
+    mut persist: impl FnMut(&Settings) -> Result<(), String>,
+    mut release: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let failure = apply(next).err().or_else(|| persist(next).err());
+    if let Some(error) = failure {
+        if apply(old).is_err() {
+            return Err(format!("{error}; previous policy could not be restored"));
+        }
+        release().map_err(|e| {
+            format!(
+                "{error}; previous policy restored but transition guard could not be released: {e}"
+            )
+        })?;
+        return Err(error);
+    }
+    release()
+}
 pub fn update(body: &[u8]) -> (u16, Value) {
     let result = (|| -> Result<Value, String> {
         let u: Update = serde_json::from_slice(body).map_err(|_| "Invalid WireGuard request")?;
@@ -511,6 +711,12 @@ pub fn update(body: &[u8]) -> (u16, Value) {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(DIR, fs::Permissions::from_mode(0o700))
             .map_err(|_| "Cannot protect WireGuard state directory")?;
+        // Saving/renaming/deleting an inactive profile must not restart a live tunnel.
+        if same_network(&old, &next) {
+            storage::atomic_write(Path::new(CONFIG), &serde_json::to_vec(&next).unwrap())
+                .map_err(|_| "Cannot persist WireGuard profiles")?;
+            return Ok(response(&next));
+        }
         // Validate prerequisites before interrupting any traffic.
         if next.enabled {
             if !Path::new(WG).exists() || !Path::new("/sys/module/wireguard").exists() {
@@ -523,28 +729,24 @@ pub fn update(body: &[u8]) -> (u16, Value) {
         if changing_network {
             script(HOLD)?;
         }
-        if let Err(e) = apply(&next) {
-            let rollback = apply(&old);
-            if rollback.is_ok() {
-                let _ = script(RELEASE);
-            }
-            *ERROR.lock().unwrap() = Some(if rollback.is_ok() {
-                e.clone()
-            } else {
-                format!("{e}; previous policy could not be restored")
-            });
-            return Err(ERROR.lock().unwrap().clone().unwrap());
-        }
-        if storage::atomic_write(Path::new(CONFIG), &serde_json::to_vec(&next).unwrap()).is_err() {
-            if apply(&old).is_ok() {
-                let _ = script(RELEASE);
-            }
-            return Err(
-                "Cannot persist configuration; attempted to restore previous configuration".into(),
-            );
-        }
-        if changing_network {
-            script(RELEASE)?;
+        if let Err(e) = commit_change(
+            &old,
+            &next,
+            apply,
+            |s| {
+                storage::atomic_write(Path::new(CONFIG), &serde_json::to_vec(s).unwrap())
+                    .map_err(|_| "Cannot persist configuration".into())
+            },
+            || {
+                if changing_network {
+                    script(RELEASE)
+                } else {
+                    Ok(())
+                }
+            },
+        ) {
+            *ERROR.lock().unwrap() = Some(e.clone());
+            return Err(e);
         }
         *ERROR.lock().unwrap() = None;
         Ok(response(&next))
@@ -618,6 +820,185 @@ mod tests {
     use super::*;
     fn sample() -> String {
         format!("[Interface]\nPrivateKey={}\nAddress=10.7.0.2/32, fd00::2/128\nDNS=1.1.1.1\n[Peer]\nPublicKey={}\nEndpoint=vpn.example.com:51820\nAllowedIPs=0.0.0.0/0, ::/0\n", "a".repeat(43)+"=", "b".repeat(43)+"=")
+    }
+    fn profile_change(s: &Settings, action: Value) -> Result<Settings, String> {
+        edited(
+            s,
+            serde_json::from_value(json!({"expected_revision":s.revision,"profile":action}))
+                .unwrap(),
+        )
+    }
+    fn saved(s: &Settings, name: &str, endpoint: &str) -> Settings {
+        profile_change(s, json!({"action":"save","name":name,"config_text":sample().replace("vpn.example.com:51820",endpoint)})).unwrap()
+    }
+    #[test]
+    fn legacy_configuration_migrates_without_network_changes() {
+        let mut s: Settings = serde_json::from_value(json!({"revision":7,"enabled":true,"mode":"selected","macs":["02:11:22:33:44:55"],"tunnel":parse(&sample()).unwrap()})).unwrap();
+        let old = s.clone();
+        migrate(&mut s);
+        migrate(&mut s);
+        assert_eq!(s.profiles.len(), 1);
+        assert_eq!(s.active_profile, Some(1));
+        assert_eq!(s.revision, 7);
+        assert!(same_network(&old, &s));
+        validate(&s).unwrap();
+        let restored: Settings = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+        validate(&restored).unwrap();
+        assert_eq!(restored.active_profile, s.active_profile);
+    }
+    #[test]
+    fn five_profile_limit_and_atomic_validation() {
+        let mut s = Settings::default();
+        for i in 1..=5 {
+            s = saved(&s, &format!("VPN {i}"), "vpn.example.com:51820");
+        }
+        let before = serde_json::to_vec(&s).unwrap();
+        assert!(profile_change(
+            &s,
+            json!({"action":"save","name":"six","config_text":sample()})
+        )
+        .err()
+        .unwrap()
+        .contains("maximum of 5"));
+        assert_eq!(before, serde_json::to_vec(&s).unwrap());
+        assert!(profile_change(&s, json!({"action":"rename","id":2,"name":" vpn 1 "})).is_err());
+        assert!(profile_change(&s, json!({"action":"rename","id":2,"name":"x\ny"})).is_err());
+        assert!(
+            profile_change(&s, json!({"action":"rename","id":2,"name":"x".repeat(49)})).is_err()
+        );
+        let s = profile_change(&s, json!({"action":"delete","id":5})).unwrap();
+        assert_eq!(
+            saved(&s, "Replacement", "two.example.com:51820")
+                .profiles
+                .len(),
+            5
+        );
+    }
+    #[test]
+    fn switch_preserves_device_policy_and_enabled_state() {
+        let mut s = saved(&Settings::default(), "Home", "one.example.com:51820");
+        s.enabled = true;
+        s.mode = "selected".into();
+        s.macs = vec!["02:11:22:33:44:55".into()];
+        let backup = saved(&s, "Travel", "two.example.com:51820");
+        assert!(same_network(&s, &backup));
+        let next = profile_change(&backup, json!({"action":"activate","id":2})).unwrap();
+        assert!(next.enabled);
+        assert_eq!(next.mode, s.mode);
+        assert_eq!(next.macs, s.macs);
+        assert_eq!(
+            next.tunnel.as_ref().unwrap().endpoint,
+            "two.example.com:51820"
+        );
+        assert!(!same_network(&backup, &next));
+        let renamed =
+            profile_change(&next, json!({"action":"rename","id":2,"name":"Office"})).unwrap();
+        assert!(same_network(&next, &renamed));
+        let deleted = profile_change(&renamed, json!({"action":"delete","id":1})).unwrap();
+        assert!(same_network(&renamed, &deleted));
+    }
+    #[test]
+    fn active_deletion_requires_off_and_never_chooses_another_profile() {
+        let mut s = saved(&Settings::default(), "One", "one.example.com:51820");
+        s.enabled = true;
+        assert!(profile_change(&s, json!({"action":"delete","id":1})).is_err());
+        s.enabled = false;
+        let s = profile_change(&s, json!({"action":"delete","id":1})).unwrap();
+        assert!(s.profiles.is_empty() && s.tunnel.is_none() && s.active_profile.is_none());
+        let s = saved(&s, "New", "new.example.com:51820");
+        assert!(!s.enabled);
+        assert_eq!(s.profiles.len(), 1);
+    }
+    #[test]
+    fn profile_actions_reject_stale_unknown_and_mixed_updates() {
+        let s = saved(&Settings::default(), "Home", "one.example.com:51820");
+        for v in [
+            json!({"expected_revision":0,"profile":{"action":"activate","id":1}}),
+            json!({"profile":{"action":"activate","id":1}}),
+            json!({"expected_revision":1,"enabled":false,"profile":{"action":"activate","id":1}}),
+        ] {
+            assert!(edited(&s, serde_json::from_value(v).unwrap()).is_err());
+        }
+        assert!(profile_change(&s, json!({"action":"activate","id":99})).is_err());
+        assert!(profile_change(
+            &s,
+            json!({"action":"save","name":"Bad","config_text":"invalid"})
+        )
+        .is_err());
+        let next=edited(&s,serde_json::from_value(json!({"expected_revision":s.revision,"config_text":sample().replace("vpn.example.com:51820","changed.example.com:123")})).unwrap()).unwrap();
+        assert_eq!(next.profiles.len(), 1);
+        assert_eq!(next.profiles[0].tunnel.endpoint, "changed.example.com:123");
+        validate(&next).unwrap();
+    }
+    #[test]
+    fn every_profile_is_redacted_and_invalid_persisted_state_is_rejected() {
+        let mut s = saved(&Settings::default(), "Home", "one.example.com:51820");
+        s = saved(&s, "Travel", "two.example.com:51820");
+        s.profiles[1].tunnel.preshared_key = "c".repeat(43) + "=";
+        let public = response(&s).to_string();
+        for p in &s.profiles {
+            assert!(!public.contains(&p.tunnel.private_key));
+            assert!(!public.contains(&p.tunnel.public_key));
+        }
+        assert!(!public.contains(&s.profiles[1].tunnel.preshared_key));
+        assert!(public.contains("Travel"));
+        s.active_profile = Some(99);
+        assert!(validate(&s).is_err());
+        s.active_profile = Some(1);
+        s.profiles[1].id = 1;
+        assert!(validate(&s).is_err());
+    }
+    #[test]
+    fn failed_switch_restores_previous_tunnel_and_saved_selection() {
+        use std::cell::RefCell;
+        let old = saved(
+            &saved(&Settings::default(), "One", "one.example.com:51820"),
+            "Two",
+            "two.example.com:51820",
+        );
+        let next = profile_change(&old, json!({"action":"activate","id":2})).unwrap();
+        for fail_apply in [true, false] {
+            let attempts = RefCell::new(vec![]);
+            let released = RefCell::new(false);
+            let result = commit_change(
+                &old,
+                &next,
+                |s| {
+                    attempts.borrow_mut().push(s.active_profile);
+                    if fail_apply && s.active_profile == Some(2) {
+                        Err("Apply failed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |s| {
+                    assert!(!fail_apply, "A failed apply must never reach persistence");
+                    assert_eq!(s.active_profile, Some(2));
+                    Err("Disk full".into())
+                },
+                || {
+                    *released.borrow_mut() = true;
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(*attempts.borrow(), vec![Some(2), Some(1)]);
+            assert!(*released.borrow());
+        }
+        let mut released = false;
+        let error = commit_change(
+            &old,
+            &next,
+            |_| Err("Apply failed".into()),
+            |_| panic!("must not persist"),
+            || {
+                released = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("previous policy could not be restored"));
+        assert!(!released);
     }
     #[test]
     fn import_and_reject_hooks() {

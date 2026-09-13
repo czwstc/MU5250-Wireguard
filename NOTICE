@@ -1,5 +1,5 @@
 MU5250-OpenUI-Wireguard
-Copyright (c) 2026 ZweiChen and contributors.
+Copyright (c) 2026 ZweiChen.
 
 This project is a fork of MU5250-OpenUI, with integrated WireGuard gateway
 and touchscreen controls. It uses OpenUI's existing authentication, API,
