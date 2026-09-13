@@ -48,7 +48,8 @@ ftsrc='base/ftbase base/ftsystem base/ftinit base/ftdebug base/ftbbox base/ftbit
 for s in ftsrc:jobs.append((ft/'src'/(s+'.c'),cc,['-DFT2_BUILD_LIBRARY','-DFT_CONFIG_MODULES_H="ftmodule_min.h"'], 'ft_'))
 jobs.append((ROOT/'screen/devui/vendor/html_view.cpp',cxx,['-std=c++17'],'app_'))
 # Warnings as errors on our host; upstream rendering/dependencies keep their own warnings.
-jobs.append((ROOT/'screen/panel.c',cc,['-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function']+(['-DSCREEN_PREVIEW'] if preview else []),'app_'))
+# Zig release optimization defines NDEBUG: keep on-device --self-test assertions active.
+jobs.append((ROOT/'screen/panel.c',cc,['-UNDEBUG','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function']+(['-DSCREEN_PREVIEW'] if preview else []),'app_'))
 def compile_one(job):
  p, compiler, flags, prefix=job
  obj=out/(prefix+p.stem+'.o'); stamp=obj.with_suffix('.sha256')

@@ -40,6 +40,7 @@ static void draw_pixel(struct drm_buf *b, int x, int y, uint16_t c) {
     b->map[y * W + x] = c;
 }
 #endif
+#include "power.h"
 #include "devui/html.h"
 #include "devui_assets.h"
 #define MAX_ROWS 128
@@ -68,6 +69,9 @@ struct snapshot {
 };
 static struct snapshot data, draft;
 static int original_selection[MAX_ROWS];
+#ifndef SCREEN_PREVIEW
+static int screen_awake = 1;
+#endif
 enum { WG, DEVICES, MENU, PROFILES, OVERVIEW };
 static int page = MENU, offset, dialog, dirty, quitting, need_draw = 1,
                                                   return_after_save;
@@ -263,6 +267,40 @@ static void brightness(int v) {
     close(fd);
   }
 }
+/* Observe the dedicated key device without grabbing it: factory long-press
+ * handling remains available. Never open the touchscreen as the power key. */
+static int power_open(void) {
+  for (int i = 0; i < 32; i++) {
+    char path[64], name[128] = {0};
+    snprintf(path, sizeof(path), "/dev/input/event%d", i);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) continue;
+    unsigned char keys[(KEY_MAX + 8) / 8] = {0};
+    if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) >= 0 &&
+        !strcmp(name, "pmic_pwrkey") &&
+        ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) >= 0 &&
+        (keys[KEY_POWER / 8] & (1u << (KEY_POWER % 8)))) {
+      return fd;
+    }
+    close(fd);
+  }
+  return -1;
+}
+static int power_check;
+static int screen_toggle(int *on_level) {
+  int current = readint(BL);
+  if (screen_awake && current > 0) *on_level = current;
+  int target = screen_awake ? 0 : *on_level;
+  brightness(target);
+  if (readint(BL) != target) {
+    logline("power key: backlight write failed");
+    return -1;
+  }
+  screen_awake = !screen_awake;
+  need_draw = 1;
+  logline("power key: display %s", screen_awake ? "awake" : "asleep");
+  return 0;
+}
 static int processes(const char *name, int sig) {
   DIR *dir = opendir("/proc");
   if (!dir)
@@ -390,7 +428,7 @@ static int restore(void) {
 struct input_touch {
   int fd, slot, id[2], x, y, xok, yok;
   struct input_absinfo ax, ay;
-  int down, sx, sy, moved, multi, dropped;
+  int down, sx, sy, moved, multi, dropped, suppress;
 };
 static int input_open(struct input_touch *t) {
   memset(t, 0, sizeof(*t));
@@ -467,10 +505,11 @@ static int input_event(struct input_touch *t, struct input_event *e) {
       t->moved = 0;
       t->multi = t->id[1] >= 0;
     }
+    if (!screen_awake || t->suppress) t->multi = 1;
     if (abs(x - t->sx) > 12 || abs(y - t->sy) > 12)
       t->moved = 1;
   } else if (t->down && t->id[0] < 0) {
-    if (!t->multi && !t->moved)
+    if (screen_awake && !t->suppress && !t->multi && !t->moved)
       tap(t->sx, t->sy);
     t->down = 0;
     return 1;
@@ -478,6 +517,7 @@ static int input_event(struct input_touch *t, struct input_event *e) {
   return t->id[0] >= 0;
 }
 static int input_self_test(void) {
+  power_self_test();
   struct drm_buf frame = {.pitch = W * 2, .map = calloc(W * H, 2)};
   assert(frame.map);
   page = MENU;
@@ -505,6 +545,21 @@ static int input_self_test(void) {
   }
   assert(quitting == 1);
   quitting = 0;
+  screen_awake = 0;
+  for (size_t i = 0; i < 5; i++) {
+    struct input_event e = events[i]; input_event(&t, &e);
+  }
+  screen_awake = 1; /* A finger held over wake must not activate Stock UI. */
+  for (size_t i = 5; i < 7; i++) {
+    struct input_event e = events[i]; input_event(&t, &e);
+  }
+  assert(!quitting);
+  t.suppress = 1; /* Entire dark tap queued before the wake key was drained. */
+  for (size_t i = 0; i < 7; i++) {
+    struct input_event e = events[i]; input_event(&t, &e);
+  }
+  assert(!quitting);
+  t.suppress = 0;
   for (size_t i = 0; i < 5; i++) {
     struct input_event e = events[i];
     input_event(&t, &e);
@@ -532,7 +587,7 @@ static int input_self_test(void) {
   }
   assert(!quitting);
   free(frame.map);
-  puts("Rotated MT-B tap, drag rejection and dropped-event tests passed");
+  puts("Power press/repeat/long/drop, dark-touch rejection and rotated MT-B tests passed");
   return 0;
 }
 static int panel(int heartbeat, int idle_seconds) {
@@ -549,6 +604,16 @@ static int panel(int heartbeat, int idle_seconds) {
     close(input.fd);
     return 1;
   }
+  int keyfd = power_open();
+  if (keyfd < 0) {
+    logline("power key open failed");
+    drm_destroy(&drm); close(input.fd); return 1;
+  }
+  struct power_button key = {0};
+  int on_level = readint(BL), check_step = 0;
+  if (on_level <= 0) on_level = 128;
+  screen_awake = 1;
+  long long started = monotonic_ms();
   long long last = monotonic_ms(), next = 0, beat = 0, contact = last;
   int first = 1;
   char reply[49152];
@@ -588,7 +653,7 @@ static int panel(int heartbeat, int idle_seconds) {
     }
     if (now - contact > 15000)
       break;
-    if (need_draw) {
+    if (need_draw && screen_awake) {
       struct drm_buf *frame = drm_draw_buf(&drm);
       render(frame);
       rotate_frame(frame);
@@ -609,16 +674,34 @@ static int panel(int heartbeat, int idle_seconds) {
     }
     if (getppid() == 1)
       break;
-    struct pollfd p = {.fd = input.fd, .events = POLLIN};
-    poll(&p, 1, 50);
+    if (power_check && check_step < 3 && now - started >= (check_step + 1) * 1000) {
+      if (screen_toggle(&on_level)) goto end;
+      input.multi = 1;
+      check_step++;
+    }
+    struct pollfd p[2] = {{.fd = input.fd, .events = POLLIN},
+                         {.fd = keyfd, .events = POLLIN}};
+    if (poll(p, 2, 50) < 0 && errno != EINTR) goto end;
+    if ((p[0].revents | p[1].revents) & (POLLERR | POLLHUP | POLLNVAL)) goto end;
     struct input_event ev;
+    input.suppress = 0;
+    while (read(keyfd, &ev, sizeof(ev)) == sizeof(ev)) {
+      long long stamp = (long long)ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000;
+      if (power_event(&key, ev.type, ev.code, ev.value, stamp)) {
+        if (screen_toggle(&on_level)) goto end;
+        input.multi = 1;
+        input.suppress = 1; /* Reject touch queued across a backlight transition. */
+        last = monotonic_ms();
+      }
+    }
     while (read(input.fd, &ev, sizeof(ev)) == sizeof(ev)) {
-      if (input_event(&input, &ev))
+      if (input_event(&input, &ev) && screen_awake)
         last = monotonic_ms();
     }
   }
-  result = 0;
+  result = power_check && check_step != 3 ? 1 : 0;
 end:
+  close(keyfd);
   drm_destroy(&drm);
   close(input.fd);
   return result;
@@ -756,7 +839,7 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--self-test"))
     return input_self_test();
   if (argc == 2 && !strcmp(argv[1], "--version")) {
-    puts("openui-screen 2 DevUI / Atomic / OpenUI agent");
+    puts("openui-screen 3 DevUI / Atomic / OpenUI agent / power key");
     return 0;
   }
   if (argc == 2 && !strcmp(argv[1], "--ipc-check")) {
@@ -771,7 +854,15 @@ int main(int argc, char **argv) {
     }
     return 1;
   }
+  if (argc == 2 && !strcmp(argv[1], "--power-check")) {
+    power_check = 1;
+    return supervise(5, 0);
+  }
   if (argc == 2 && !strcmp(argv[1], "--probe")) {
+    int fd = power_open();
+    if (fd < 0) return 1;
+    close(fd);
+    puts("Power: pmic_pwrkey KEY_POWER, non-exclusive observer");
     struct input_touch t;
     if (input_open(&t) < 0)
       return 1;
@@ -817,6 +908,7 @@ static void press_id(struct drm_buf *b,const char *id) {
   tap(x+w/2,y+h/2);
 }
 int main(int argc, char **argv) {
+  power_self_test();
   if(argc<2)return 2;
   struct drm_buf b={.pitch=W*2,.map=calloc(W*H,2)};
   assert(b.map);

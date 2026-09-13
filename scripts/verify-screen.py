@@ -48,6 +48,13 @@ config_hash=read('if test -f /data/local/tmp/openui-wireguard/config.json; then 
 route=read('ip -4 route show default')
 try:
  print(read('/data/bin/openui-screen --self-test; /data/bin/openui-screen --ipc-check'),flush=True)
+ # Exercise the same backlight function as KEY_POWER, without injecting events
+ # into the factory key daemon. End asleep to check supervisor restoration.
+ assert read('/data/bin/openui-screen --power-check >/tmp/openui-screen/power-test.log 2>&1; echo $?') == '0'
+ power_log=read('cat /tmp/openui-screen/power-test.log')
+ assert power_log.count('power key: display asleep') == 2
+ assert power_log.count('power key: display awake') == 1
+ health(); print('PASS backlight off/on/off readback and stock restoration from sleep',flush=True)
  p=start(4);assert p.wait(timeout=15)==0;health();print('PASS short Atomic display takeover / idle restore / unchanged WG configuration',flush=True)
  for signal in ('KILL','STOP'):
   p=start()

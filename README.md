@@ -143,7 +143,9 @@ python3 scripts/verify-screen.py --gateway 192.168.0.1 \
 ```
 
 This verification temporarily takes over the physical display and tests normal,
-idle, crash and stalled-panel recovery. Details: [screen documentation](docs/SCREEN.md).
+idle, crash and stalled-panel recovery. Short-press the power button to turn the
+DevUI backlight off or wake it; touch actions are ignored while dark. The existing
+two-minute idle return still applies. Long presses remain with the factory handler. Details: [screen documentation](docs/SCREEN.md).
 
 The inherited desktop installer and upstream release downloads are retained as
 OpenUI tooling; they are **not release packages for this fork's WireGuard feature**.
