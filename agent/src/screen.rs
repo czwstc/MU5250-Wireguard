@@ -8,7 +8,7 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -16,6 +16,8 @@ use std::{
 const DIR: &str = "/tmp/openui-screen";
 const BIN: &str = "/data/bin/openui-screen";
 const VERIFIED: &str = "/data/local/tmp/openui-screen-verified";
+static SUPERVISOR: AtomicI32 = AtomicI32::new(0);
+static STARTING: AtomicBool = AtomicBool::new(false);
 static LIFECYCLE: Mutex<()> = Mutex::new(());
 static SNAPSHOT: Mutex<String> = Mutex::new(String::new());
 static INTEREST: AtomicU64 = AtomicU64::new(0);
@@ -40,17 +42,20 @@ fn owner() -> Option<i32> {
     let exe = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
     (exe == Path::new(BIN)).then_some(pid)
 }
+pub fn running() -> bool {
+    STARTING.load(Ordering::Acquire) || owner().is_some()
+}
 pub fn get() -> (u16, Value) {
-    let running = owner().is_some();
+    let running = running();
     let state = fs::read_to_string(format!("{DIR}/state")).unwrap_or_else(|_| "idle".into());
     (
         200,
-        json!({"ok":true,"data":{"available":Path::new(BIN).is_file(),"verified":Path::new(VERIFIED).is_file(),"running":running,"state":if running || state.trim()=="error" {state.trim()} else {"idle"}}}),
+        json!({"ok":true,"data":{"available":Path::new(BIN).is_file(),"verified":Path::new(VERIFIED).is_file(),"running":running,"shortcut":crate::screen_shortcut::status(),"settings_revision":crate::screen_settings::current().revision,"state":if STARTING.load(Ordering::Acquire) && owner().is_none() { "starting" } else if running || state.trim()=="error" {state.trim()} else {"idle"}}}),
     )
 }
 pub fn open() -> (u16, Value) {
     let _guard = LIFECYCLE.lock().unwrap();
-    if owner().is_some() {
+    if running() {
         return get();
     }
     if !Path::new(BIN).is_file() || !Path::new(VERIFIED).is_file() {
@@ -60,6 +65,7 @@ pub fn open() -> (u16, Value) {
         );
     }
     // A separate supervisor survives an agent restart. It owns the DRM child and restores stock UI.
+    STARTING.store(true, Ordering::Release);
     match Command::new(BIN)
         .arg("--supervise")
         .stdin(Stdio::null())
@@ -68,20 +74,29 @@ pub fn open() -> (u16, Value) {
         .spawn()
     {
         Ok(mut child) => {
+            SUPERVISOR.store(child.id() as i32, Ordering::Release);
             std::thread::spawn(move || {
                 let _ = child.wait();
+                SUPERVISOR.store(0, Ordering::Release);
+                STARTING.store(false, Ordering::Release);
             });
             (202, json!({"ok":true,"data":{"state":"starting"}}))
         }
-        Err(_) => (
-            500,
-            json!({"ok":false,"error":"Cannot start screen supervisor"}),
-        ),
+        Err(_) => {
+            STARTING.store(false, Ordering::Release);
+            (
+                500,
+                json!({"ok":false,"error":"Cannot start screen supervisor"}),
+            )
+        }
     }
 }
 pub fn close() -> (u16, Value) {
     let _guard = LIFECYCLE.lock().unwrap();
-    if let Some(pid) = owner() {
+    if let Some(pid) = owner().or_else(|| {
+        let pid = SUPERVISOR.load(Ordering::Acquire);
+        (pid > 1).then_some(pid)
+    }) {
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
@@ -218,8 +233,9 @@ fn request(line: &str) -> String {
         let snapshot = SNAPSHOT.lock().unwrap().clone();
         let result = *RESULT.lock().unwrap();
         return format!(
-            "{}J {} {} {} {}\n.\n",
+            "{}{}J {} {} {} {}\n.\n",
             snapshot,
+            crate::screen_settings::current().projection(),
             u8::from(BUSY.load(Ordering::Acquire)),
             JOB.load(Ordering::Acquire),
             result.0,
@@ -272,6 +288,7 @@ pub fn start(state: Arc<AppState>) {
     if fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).is_err() {
         return;
     }
+    crate::screen_shortcut::start();
     std::thread::spawn(move || {
         let mut clients = vec![];
         let mut refreshed = 0;

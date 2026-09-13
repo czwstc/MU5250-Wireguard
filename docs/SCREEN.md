@@ -1,120 +1,188 @@
-# DevUI 小屏菜单与 WireGuard 控制
+# DevUI device screen
 
-使用 OpenUI 左侧 WireGuard →“Open DevUI screen”。DevUI 菜单临时接管
-320×480 触摸屏，使用英文界面；点“Stock UI”、网页“Restore stock UI”，或两分钟无触摸或短按操作后
-恢复原厂显示和触摸。关闭网页不会立即退出小屏。退出不会关闭 WireGuard。
+Open **DevUI** in the OpenUI sidebar. This page manages the device's English
+320×480 touchscreen separately from the WireGuard page. It provides **Open DevUI
+screen**, **Restore stock UI**, a four-press power-button shortcut, and saved
+preferences. Closing the browser does not close the device screen. Leaving DevUI
+never disables WireGuard or changes saved device routing.
 
-主菜单提供 Overview、WireGuard、Saved profiles 和 Device routing。
-Overview 显示 agent 提供的电池、电池温度、运行时间、CPU 和内存占用。
-WireGuard 页显示配置状态、最近握手、隧道累计流量和总开关；关闭隧道需确认。
-Saved profiles 列出最多五个已保存配置，当前配置不可重复选择。点击其他配置后
-确认切换；隧道保持原有开关状态，分流选择保持不变。确认框记住打开时的配置
-ID 和 revision，网页并发修改时会提示刷新。
-握手正常不代表已经验证互联网可用。配置和密钥仍在网页导入，小屏不显示密钥。
-设备页每页四行，勾选代表走 WireGuard；未勾选走正常网络。离线保存项仍可编辑。
-批量保存后生效；新设备默认策略继续在网页设置。设备发现沿用网页的邻居、桥接和
-无线客户端信息，不是主动在线探测，离线判定可能有延迟。最多显示 128 条记录。
+## Power button and stock UI shortcut
 
-## 电源键
+Inside DevUI, a short power-button press turns the backlight off; the next short
+press wakes it at the configured brightness. A short press lasts 30–799 ms.
+Touch actions are ignored while dark, including touches queued across wake-up.
+The display stops redrawing while asleep; agent jobs and supervisor heartbeats
+continue. This controls the LCD backlight, not whole-device suspend or power-off.
 
-DevUI 中短按电源键（30–799 ms）切换息屏/唤醒，保持原有亮度。
-只读监听 `pmic_pwrkey` 的 KEY_POWER，不使用 EVIOCGRAB，不停止原厂按键服务。
-800 ms 及以上的按压不会切换 DevUI 背光，原厂长按处理仍可接收事件。
-息屏时停止绘制并忽略触摸操作，唤醒前已经按下的手指必须松开后才能操作。
-后台 agent、网络任务及监督心跳继续运行。两分钟无操作仍返回原厂 UI，
-恢复接管前的背光状态（因此原先亮屏时，恢复可能重新亮屏）。这仅控制 LCD 背光，
-不是整机休眠或断电，也不改变 WireGuard 状态。
+Enable **Press four times to open DevUI** in the webpage and click **Save DevUI
+settings**. From the stock UI, make four short presses within **2.5 seconds**,
+leaving no more than **0.7 seconds** between presses. The agent waits 350 ms after
+the fourth release for the factory callback to settle, then uses its normal
+screen startup path. A five-second cooldown prevents repeated launches.
+The shortcut is disabled by default on a new installation and persists across
+agent restarts after being saved.
 
-`--self-test` 覆盖短按、长按、重复事件、抖动、丢包及息屏触摸。
-`--power-check` 是有监督的五秒实机测试：亮屏→息屏→唤醒→息屏→恢复原厂；
-它调用真实背光路径并检查读回值，不向系统输入设备注入电源键。
-物理按键与原厂按键服务的组合行为仍需手动确认。
+The observer reads `pmic_pwrkey` without EVIOCGRAB and does not stop the factory
+key service. Stock UI may turn its display on and off during the four presses.
+Long presses, auto-repeat, incomplete sequences and dropped events cannot launch
+DevUI. Events are drained while the shortcut is disabled or DevUI is already
+running, so they cannot be replayed when it becomes enabled. The shortcut requires
+a verified screen component and a completed factory boot handshake. It does not
+modify factory menus, binaries, boot scripts, power-off or hardware-reset behavior.
 
-从原厂 UI 启动的快捷入口尚未启用。可增加独立的只读按键观察器，双击短按后
-通过 agent 现有启动路径进入 DevUI（检查原厂启动完成、屏幕组件已验证和当前状态）。
-但原厂同时会看到这两次短按，可能触发亮灭屏；应先验证该组合，再在网页提供
-可关闭的快捷键选项。不建议复用长按，因为可能与关机或硬件复位冲突。
+## Online settings
 
-## 构建与安装
+| Setting | Behavior |
+| --- | --- |
+| Four-press shortcut | Enable or disable entry from stock UI; saved on the device |
+| Brightness | 20–255, shown as a percentage; updates while awake without waking a sleeping panel |
+| Idle return | 30–600 seconds; default 120 seconds, measured from touch or a short power press |
+| Startup page | Main menu or any visible feature; applies on the next opening |
+| Menu features | Show or hide Overview, WireGuard, Saved profiles and Device routing |
 
-屏幕程序单独构建为 aarch64 musl 静态可执行文件，不替换原厂程序或开机入口。
-`screen/qpic.h` 基于用户提供的 `mu5250_tweaking` Atomic 示例，程序使用 GPLv3+；
-HTML/CSS 渲染器复用 `33333s/u60pro-devui` 的 `html_view.cpp`（MIT），
-通过 litehtml 0.10 和 FreeType 2.13.3 渲染嵌入的 GNU Unifont 17.0.05 OTF（SIL OFL）。
-依赖源码和字体均校验 SHA-256。显示继续使用现有 Atomic 双缓冲；不编译或运行
-上游 legacy SETCRTC、ubus/USB 控制、电源键及开机接管脚本。
-菜单 HTML/CSS 在 `screen/devui/ui/`，动态页面与动作在 `render.h`、`actions.h`；
-构建时嵌入二进制，与配置和恢复标记一起通过现有部署流程管理。
-源码和字体许可在 `screen/` 内；与 MIT agent 通过本地 socket 通信。
+At least one feature must remain visible. **Stock UI** and **Back** are always
+available. Hiding a feature only changes the screen menu; it does not disable its
+network service. A hidden page with unsaved work remains open until the draft or
+operation is resolved. The configured idle timeout discards unsaved device
+routing choices and returns to stock UI, even when the display is asleep.
+Recovery restores the brightness recorded before takeover; it may therefore
+light the stock display again if it was previously awake.
+
+Click **Save DevUI settings** to persist edits. The screen picks up brightness,
+idle timeout and menu visibility within its two-second polling interval. Revision
+checks reject stale saves from another browser session; **Reload settings**
+reloads the device's saved version. Settings contain no passwords, VPN keys, HTML,
+scripts or shell commands.
+
+## Screen pages
+
+- **Overview:** a battery icon with a proportional fill and large percentage,
+  a low-battery color at 20% or below, battery temperature, uptime, CPU and memory.
+  Missing battery data displays `--%`. The main menu also shows a battery badge.
+- **WireGuard:** configuration state, handshake age, per-run tunnel traffic and
+  enable/disable. Disabling requires confirmation. A recent handshake does not
+  claim verified internet access. Keys and configuration imports stay in OpenUI.
+- **Saved profiles:** up to five named profiles. Switching preserves the current
+  enable state and device routing; confirmation remembers the profile ID and
+  WireGuard revision to prevent overwriting concurrent webpage edits.
+- **Device routing:** four rows per page, including saved offline devices.
+  Checked devices use WireGuard; others use normal networking. Edits apply in a
+  batch. The new-device default policy is configured on the WireGuard webpage.
+  Discovery uses the same bridge, neighbor and Wi-Fi observations as OpenUI,
+  not an active reachability probe. Up to 128 choices are projected.
+
+## Build and deployment
+
+The separate screen executable uses aarch64 musl and GPL-3.0-or-later. It talks
+to the MIT-licensed agent over a root-only Unix socket. The renderer is adapted
+from [33333s/u60pro-devui](https://github.com/33333s/u60pro-devui), using litehtml
+0.10, FreeType 2.13.3 and GNU Unifont 17.0.05 OTF. The display layer derives from
+the Atomic DRM example in
+[amenekowo/mu5250_tweaking](https://github.com/amenekowo/mu5250_tweaking).
+Dependency archives and the font are SHA-256 pinned. License texts are retained
+under `screen/`; no proprietary device fonts or factory UI assets are bundled.
 
 ```sh
-ZIG=/path/to/zig-0.14.1 sh screen/build.sh
-# 无硬件的实际渲染预览和交互测试：
+ZIG=/path/to/zig sh screen/build.sh
+# Native rendering and interaction checks without hardware:
 sh screen/build.sh --preview
-# 使用现有部署命令时附加：
+# Add to the normal component deployment command:
 # --screen build/screen/openui-screen
 ```
 
-部署脚本保存组件及验证标记的恢复快照，替换屏幕程序后清除验证标记。
-网页入口在本机验证完成前不可用。设备已有运行中的面板时先恢复原厂界面。
+Deployment snapshots the previous components and verification marker for rollback.
+Restore stock UI before replacing a running screen executable. A new screen binary
+invalidates the marker until the device recovery checks pass. The webpage and
+power-button shortcut both respect this gate.
 
-**写操作：**以下脚本会临时接管小屏并测试面板崩溃、卡住、网页关闭和
-120 秒空闲恢复；不修改 WireGuard 配置。需要现有 SSH 密钥，网页登录密码仅在
-内存中读取和使用，不会打印。通过后开放网页入口，失败时撤销入口。
+The following command temporarily takes over the screen and tests backlight
+sleep/wake, startup without touch, crash and stall recovery, web open/close,
+duplicate open and the default 120-second idle return. It does not change
+WireGuard configuration or network rules. Run it with the default 120-second
+DevUI idle setting; disable the shortcut while carrying out unattended tests.
+Existing login credentials are read in memory and are not printed.
 
 ```sh
-python3 scripts/verify-screen.py --gateway 192.168.0.1 --port 2222 --ssh-key /path/to/id_ed25519
+python3 scripts/verify-screen.py --gateway 192.168.0.1 --port 2222 \
+  --ssh-key /path/to/id_ed25519
 ```
 
-## 接口与运行保护
+After recovery verification, the following optional test checks authenticated
+settings, stale-save rejection, live brightness without restarting the panel, and
+a configured 30-second idle return. It restores the prior display preferences;
+`--enable-shortcut` deliberately leaves the four-press shortcut enabled on success.
+Do not interact with the device during the idle test.
 
-- 鉴权 HTTP：`GET /api/screen` 返回 `available/verified/running/state`；
-  `POST /api/screen` 请求打开；`DELETE /api/screen` 请求恢复。执行异步，轮询状态。
-- `PUT /api/wireguard` 返回 `revision`；网页提交 `expected_revision`。
-  小屏局部更新使用 `enabled`、`devices: [{mac, selected}]` 或激活配置动作，必须附带版本。
-  版本冲突返回 HTTP 409，旧的完整更新请求保留兼容性。
-- 私有 Unix socket `/tmp/openui-screen/control.sock` 为 0600，目录为 0700。
-  屏幕只接收经过裁剪的状态、设备列表、配置 ID/名称/选中状态和系统概览；
-  没有 endpoint、私钥、PSK 或登录凭据。
-  协议增加 `P\tID\tACTIVE\tNAME` 配置行、`O` 系统概览行和
-  `profile REVISION ID` 激活动作；原有 status/toggle/devices 协议兼容。
-  变更由 agent 后台执行，小屏轮询作业结果；数据超过十秒未更新时禁用修改。
-- 监督进程持有独占锁，先检查原厂启动同步，再记录背光和服务状态。
-  原厂界面可能有不受 procd 管理的残留实例；停服务后仅对匹配原厂可执行路径的
-  进程发送退出信号，必要时结束残留进程，然后接管 DRM。
-- 画面在提交前旋转 180°，原始触摸坐标同时转换为 `(319-x, 479-y)`，匹配机身方向。
-- 使用 DRM Atomic 和 RGB565 双缓冲，仅改变内容时刷新。不使用 legacy SETCRTC、
-  `image_dump`、电源键独占截获或厂商 LED ubus 调用。低亮度时临时使用 128/255，退出恢复原值。
-- 面板没有心跳超过十秒时由监督进程终止并恢复原厂界面；终止宽限期两秒。
-  agent 通信中断十五秒后面板退出。网络任务在 agent 内继续完成。
+```sh
+python3 scripts/verify-devui-settings.py --gateway 192.168.0.1 --port 2222 \
+  --ssh-key /path/to/id_ed25519 --enable-shortcut
+```
 
-监督进程恢复失败、同时被强制杀死，或内核显示驱动异常，无法承诺自动恢复。
-不要把进程级看护当作内核或断电保护。必要时通过 SSH 执行：
+## Interfaces and process ownership
+
+- Authenticated `GET /api/screen`: availability, verification, lifecycle state,
+  settings revision and shortcut-listener status.
+- Authenticated `POST /api/screen` / `DELETE /api/screen`: asynchronous open and
+  restore. A single startup reservation and supervisor lock prevent duplicate owners.
+- Authenticated `GET /api/screen/settings` / `PUT /api/screen/settings`: typed,
+  versioned preferences. Saves require `expected_revision`; conflicts return 409.
+  Settings are atomically stored in `/data/local/tmp/openui-devui/settings.json`
+  with mode 0600 in a 0700 directory.
+- Private `/tmp/openui-screen/control.sock`: mode 0600, parent directory 0700.
+  The screen receives redacted `S`, `P`, `D`, `O`, `C` and `J` records. `C` contains
+  the DevUI revision, timeout, brightness, startup page and visible-page bitmask.
+  No private keys, PSKs, endpoints or login credentials appear in this projection.
+- WireGuard actions are narrow local `toggle`, `devices` and `profile` messages,
+  each carrying a WireGuard revision. Jobs execute in the agent and continue
+  after screen exit. Status older than ten seconds disables mutation controls.
+
+The independent supervisor checks factory boot synchronization and records the
+stock UI, touch process and brightness before taking over. The display uses RGB565
+Atomic double buffers and rotates both the frame and touch coordinates by 180°.
+Startup first commits a real frame, then enables the backlight and makes two
+bounded follow-up commits. The ready signal follows this initialization; no touch
+is needed to request the first visible frame. Normal rendering only submits
+changed content. No legacy SETCRTC, `image_dump` or vendor LED ubus calls are used.
+
+A ten-second heartbeat failure terminates the child and restores stock UI, with a
+two-second termination grace period. Loss of agent contact for fifteen seconds
+also ends the panel. These are process-level recovery measures, not protection
+against kernel display failures, power loss or killing both supervisor and child.
+Manual recovery over SSH is available:
 
 ```sh
 /data/bin/openui-screen --restore
 ```
 
-## 验证范围
+## Verification boundaries
 
-本地测试使用与设备一致的 HTML 渲染器和字体，覆盖真实链接命中、菜单跳转、
-五配置切换、确认期间网页版本变化、设备翻页、长名称/HTML 转义、勾选/确认/保存、
-无配置与过期状态禁用、180° 旋转和恢复入口。
-目标设备的 `--self-test` 使用合成 MT-B 输入测试点击、拖动抑制、事件丢失处理；
-`--probe` 只读检查实际触摸坐标范围。自动恢复验证检查原厂进程、同步状态、背光、
-网页、默认路由及 WireGuard 配置摘要保持正常。物理观感和手指点击需要在设备屏幕上确认。
-WireGuard 服务器的实际出口验证与显示/恢复验证分别进行。
+Native tests render the real HTML links and font, checking navigation, saved
+profiles, concurrent revision capture, pagination, drafts, HTML escaping,
+confirmation, stale controls, hidden features, battery states and rotation.
+Agent tests cover settings validation and conflicts plus four-press recognition,
+slow sequences, long presses, repeats, bounce and dropped events. Optimized screen
+builds retain self-test assertions.
 
-## 本次 B31 实机结果
+On-device `--self-test` uses synthetic events within the process; `--probe` reads
+actual touch axes and checks the dedicated power input. `--power-check` performs a
+supervised five-second off/on/off cycle with sysfs readback and stock recovery.
+It does not inject power events into the factory input device. Recovery checks
+also verify stock synchronization, HTTP access, default route and unchanged
+WireGuard configuration hashes. Physical four-press interaction and first-open
+screen appearance require confirmation on the device; a successful ioctl alone
+cannot prove the LCD's visual appearance. VPN exit verification is separate.
 
-2026-09-14：已部署 DevUI 版本，使用现有 agent 的本地 socket，读到两份配置、
-三台设备和系统概览。短时接管、KILL/STOP 子进程恢复、网页重复打开/关闭、默认
-120 秒空闲退出均通过；SSH、网页、原厂同步状态、背光恢复及已保存 WG 配置正常。
-小屏入口已通过验证开放。测试期间 WireGuard 保持关闭，没有修改已保存配置或
-分流规则；真实 VPN 出口不在本轮验证范围。菜单 HTML 的点击和布局经过本地同一
-渲染器测试，物理手指操作与屏幕观感仍可在设备上确认。
+## B31 verification record — 2026-09-14
 
-本次电源键更新已增加非独占 KEY_POWER 监听、背光读回检查、息屏和唤醒瞬间
-触摸抑制。发布构建显式保留自测断言，避免优化构建的 NDEBUG 使实机自测失效。
-自动验证包括背光息屏/唤醒/息屏后退出恢复；未向原厂输入设备注入按键，
-实际物理短按及长按与原厂服务的交互仍需手动验收。原厂 UI 的双击入口尚未实现。
+The agent, dashboard and screen updates were deployed to the U60 Pro. Native
+rendering tests, 70 agent tests, frontend build/lint/tests and API contract checks
+passed. Device checks passed backlight off/on/off, startup completion without
+synthetic touch, child KILL/STOP recovery, duplicate opening, webpage restoration,
+120-second idle return, live brightness changes and configured 30-second return.
+Saved WireGuard configuration and the default route were unchanged.
+
+The device owner confirmed that four short power-button presses successfully
+open DevUI from stock UI and the picture appears immediately, without a touch.
+The four-press shortcut is enabled on this device and can be disabled from the
+DevUI webpage. Brightness remains 128/255, idle return 120 seconds, startup page
+Main menu, with all four menu features visible after verification.

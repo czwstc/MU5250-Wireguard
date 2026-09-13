@@ -62,6 +62,8 @@ struct snapshot {
   unsigned long long rev, handshake, rx, tx, stamp, job, done;
   int has, enabled, connected, error, all, busy, result, n;
   int np, battery, temperature;
+  unsigned long long settings_rev;
+  int idle_seconds, brightness, home_page, menu_mask;
   unsigned long long uptime;
   double memory, cpu;
   struct profile profiles[5];
@@ -75,6 +77,17 @@ static int screen_awake = 1;
 enum { WG, DEVICES, MENU, PROFILES, OVERVIEW };
 static int page = MENU, offset, dialog, dirty, quitting, need_draw = 1,
                                                   return_after_save;
+static unsigned long long settings_revision;
+static int settings_idle = 120, settings_brightness = 128, settings_home = MENU, settings_menu = 27;
+static int visible_page(int p) { return p == MENU || (settings_menu & (1 << p)); }
+static int update_settings(const struct snapshot *s) {
+  if (!s->settings_rev || s->settings_rev == settings_revision) return 0;
+  int result = settings_revision ? 1 : 2;
+  settings_revision = s->settings_rev;
+  settings_idle = s->idle_seconds; settings_brightness = s->brightness;
+  settings_home = s->home_page; settings_menu = s->menu_mask;
+  return result;
+}
 static unsigned long long pending, pending_revision, chosen_profile, chosen_revision;
 static char chosen_name[193];
 static char notice[128];
@@ -123,6 +136,16 @@ static int parse_snapshot(char *buf, struct snapshot *out) {
                &s.has, &s.enabled, &s.connected, &s.error, &s.handshake, &s.rx,
                &s.tx, &s.all, &s.stamp) == 10)
       valid = 1;
+    else if (line[0] == 'C') {
+      unsigned long long rev; int idle, level, home, mask;
+      if (sscanf(line, "C %llu %d %d %d %d", &rev, &idle, &level, &home, &mask) == 5 &&
+          idle >= 30 && idle <= 600 && level >= 20 && level <= 255 &&
+          home >= 0 && home <= 4 && mask > 0 && !(mask & ~27) &&
+          (home == MENU || (mask & (1 << home)))) {
+        s.settings_rev = rev; s.idle_seconds = idle; s.brightness = level;
+        s.home_page = home; s.menu_mask = mask;
+      }
+    }
     else if (line[0] == 'J')
       sscanf(line, "J %d %llu %llu %d", &s.busy, &s.job, &s.done, &s.result);
     else if (line[0] == 'O')
@@ -160,9 +183,9 @@ static int parse_snapshot(char *buf, struct snapshot *out) {
     }
     line = strtok_r(NULL, "\n", &save);
   }
-  if (valid)
+  if (valid || s.settings_rev)
     *out = s;
-  return valid;
+  return valid || s.settings_rev;
 }
 #ifndef SCREEN_PREVIEW
 static int exchange(const char *request, char *reply, size_t cap) {
@@ -610,15 +633,16 @@ static int panel(int heartbeat, int idle_seconds) {
     drm_destroy(&drm); close(input.fd); return 1;
   }
   struct power_button key = {0};
-  int on_level = readint(BL), check_step = 0;
+  int on_level = settings_brightness, check_step = 0;
   if (on_level <= 0) on_level = 128;
   screen_awake = 1;
   long long started = monotonic_ms();
   long long last = monotonic_ms(), next = 0, beat = 0, contact = last;
-  int first = 1;
+  int first = 1, settling = 0;
+  long long settle_at = 0;
   char reply[49152];
   while (!g_stop && !quitting &&
-         monotonic_ms() - last < (long long)idle_seconds * 1000) {
+         monotonic_ms() - last < (long long)(idle_seconds ? idle_seconds : settings_idle) * 1000) {
     long long now = monotonic_ms();
     if (now >= next) {
       next = now + 2000;
@@ -627,6 +651,19 @@ static int panel(int heartbeat, int idle_seconds) {
         contact = now;
         if (parse_snapshot(reply, &incoming)) {
           data = incoming;
+          int old_brightness = settings_brightness;
+          int changed = update_settings(&data);
+          if (changed) {
+            on_level = settings_brightness;
+            if (screen_awake && !first && old_brightness != on_level) brightness(on_level);
+            if (changed == 2) { page = settings_home; if (page == DEVICES) enter_devices(); }
+          }
+          if (page == DEVICES && !dirty && !pending && !dialog) {
+            draft = data;
+            for (int i = 0; i < draft.n; i++) original_selection[i] = draft.rows[i].selected;
+            if (offset >= draft.n) offset = 0;
+          }
+          if (!visible_page(page) && !dirty && !pending && !dialog) page = MENU;
           need_draw = 1;
           if (pending && data.done >= pending) {
             if (data.result) {
@@ -653,19 +690,38 @@ static int panel(int heartbeat, int idle_seconds) {
     }
     if (now - contact > 15000)
       break;
+    if (settling && now >= settle_at && !screen_awake) {
+      settling = 0; (void)!write(heartbeat, "R", 1);
+    }
+    if (settling && now >= settle_at && screen_awake) need_draw = 1;
     if (need_draw && screen_awake) {
       struct drm_buf *frame = drm_draw_buf(&drm);
       render(frame);
       rotate_frame(frame);
-      if (first || memcmp(frame->map, drm.bufs[drm.cur_buf ^ 1].map,
+      if (first || settling || memcmp(frame->map, drm.bufs[drm.cur_buf ^ 1].map,
                           (size_t)frame->pitch * H)) {
         if (drm_flip(&drm) < 0)
           goto end;
       }
       need_draw = 0;
       if (first) {
-        (void)!write(heartbeat, "R", 1);
+        // QPIC modeset can reset the backlight. Illuminate only after a real frame.
+        brightness(on_level);
+        if (readint(BL) != on_level) goto end;
+        settling = 2;
+        settle_at = now + 150;
         first = 0;
+        logline("first frame committed; backlight=%d", on_level);
+      } else if (settling && now >= settle_at) {
+        // Two bounded commits after modeset; no touch is required to prime QPIC.
+        brightness(on_level);
+        if (readint(BL) != on_level) goto end;
+        settling--;
+        settle_at = now + 200;
+        if (!settling) {
+          (void)!write(heartbeat, "R", 1);
+          logline("display startup settled without touch");
+        }
       }
     }
     if (now >= beat) {
@@ -766,7 +822,8 @@ static int supervise(int seconds, int recovery) {
           (int)g_stop);
   if (processes("zte_topsw_devui", 0) || processes("mtdev2tuio", 0) || g_stop)
     goto done;
-  brightness(bl >= 64 ? bl : 128);
+  // Keep the handoff dark until the child has committed its first frame.
+  brightness(0);
   int pipefd[2];
   if (pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) < 0)
     goto done;
@@ -839,7 +896,7 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--self-test"))
     return input_self_test();
   if (argc == 2 && !strcmp(argv[1], "--version")) {
-    puts("openui-screen 3 DevUI / Atomic / OpenUI agent / power key");
+    puts("openui-screen 4 DevUI / live settings / four-press shortcut");
     return 0;
   }
   if (argc == 2 && !strcmp(argv[1], "--ipc-check")) {
@@ -872,14 +929,14 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (argc >= 2 && !strcmp(argv[1], "--supervise")) {
-    int seconds = argc == 3 ? atoi(argv[2]) : 120;
-    if (seconds < 3 || seconds > 120)
+    int seconds = argc == 3 ? atoi(argv[2]) : 0;
+    if (argc > 3 || (argc == 3 && (seconds < 3 || seconds > 600)))
       return 2;
     return supervise(seconds, 0);
   }
   if (argc == 2 && !strcmp(argv[1], "--restore"))
     return supervise(0, 1);
-  fprintf(stderr, "Use --supervise [3..120 idle seconds] or --restore\n");
+  fprintf(stderr, "Use --supervise [3..600 idle seconds] or --restore\n");
   return 2;
 }
 #else
@@ -956,6 +1013,16 @@ int main(int argc, char **argv) {
   data.error=1;capture(&b,argv[1],"error");data.error=0;
   data.stamp=(unsigned long long)time(NULL)-20;capture(&b,argv[1],"stale");
   press_id(&b,"toggle");assert(!test_request[0]);
+  char settings_line[]="C 3 60 200 4 16\n.\n";
+  struct snapshot prefs; assert(parse_snapshot(settings_line,&prefs));
+  assert(update_settings(&prefs)==2 && settings_idle==60 && settings_brightness==200 && settings_home==OVERVIEW);
+  assert(!update_settings(&prefs));
+  page=MENU;capture(&b,argv[1],"menu-custom");
+  assert(strstr(html,"act:overview") && !strstr(html,"act:wireguard"));
+  press_id(&b,"overview");assert(page==OVERVIEW);press_id(&b,"wireguard");assert(page==OVERVIEW);
+  data.battery=12;capture(&b,argv[1],"battery-low");assert(strstr(html,"12%") && strstr(html,"#ff9999"));
+  data.battery=-1;capture(&b,argv[1],"battery-unknown");assert(strstr(html,"--%"));
+  char bad_settings[]="C 4 0 0 4 99\n.\n";assert(!parse_snapshot(bad_settings,&prefs));
   page=MENU;press_id(&b,"stock");assert(quitting);
   free(b.map);puts("PASS DevUI HTML hit testing, menu navigation, profile version capture, device pagination/drafts, escaping, confirmations, disabled states and rotation");
   return 0;

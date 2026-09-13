@@ -300,3 +300,5 @@ export const IInbox = make(
     <path d="M3.5 13.5h5l1.5 2.5h4l1.5-2.5h5V19h-17v-5.5Z" />
   </>,
 )
+
+export const IMonitor = make(<><rect x="3" y="3" width="18" height="14" rx="2" /><path d="M12 17v4M8 21h8" /></>)

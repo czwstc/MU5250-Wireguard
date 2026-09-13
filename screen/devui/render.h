@@ -59,6 +59,17 @@ static void header(const char *title) {
   box(16,18,188,32,"title",title);
   linkbox(210,6,100,50,"back","Back",1,0);
 }
+static void battery_badge(int x, int y, int large) {
+  int percent = data.battery < 0 ? 0 : data.battery > 100 ? 100 : data.battery;
+  const char *color = data.battery < 0 ? "#a7b6ca" : percent <= 20 ? "#ff9999" : "#64e2aa";
+  int w=large?62:30, h=large?30:18;
+  add("<div class=\"box\" style=\"left:%dpx;top:%dpx;width:%dpx;height:%dpx;border:2px solid %s;border-radius:3px\"></div>",x,y,w,h,color);
+  add("<div class=\"box\" style=\"left:%dpx;top:%dpx;width:4px;height:%dpx;background:%s\"></div>",x+w,y+h/3,h/3,color);
+  add("<div class=\"box\" style=\"left:%dpx;top:%dpx;width:%dpx;height:%dpx;background:%s\"></div>",x+4,y+4,(w-8)*percent/100,h-8,color);
+  char label[24];
+  if(data.battery<0)snprintf(label,sizeof(label),"--%%");else snprintf(label,sizeof(label),"%d%%",percent);
+  box(x+w+10,y-5,large?140:68,large?46:30,large?"battery-value":"title",label);
+}
 static void render(struct drm_buf *b) {
   static int initialized;
   static uint16_t pixels[W * H];
@@ -91,6 +102,17 @@ static void render(struct drm_buf *b) {
     }
   } else if(page==MENU) {
     add("%s",menu_asset);
+    battery_badge(196,68,0);
+    const int pages[] = {OVERVIEW,WG,PROFILES,DEVICES};
+    const char *ids[] = {"overview","wireguard","profiles","devices"};
+    const char *titles[] = {"Overview","WireGuard","Saved profiles","Device routing"};
+    const char *details[] = {"Battery, uptime and system load","Tunnel status and on / off","Switch between up to 5 configs","Choose WireGuard or direct"};
+    int row=0;
+    for(int i=0;i<4;i++) if(visible_page(pages[i])) {
+      add("<a id=\"%s\" href=\"act:%s\" class=\"box row\" style=\"left:12px;top:%dpx;width:296px;height:64px\"><div class=\"name\">%s</div><div class=\"sub\">%s</div></a>",ids[i],ids[i],104+76*row++,titles[i],details[i]);
+    }
+    snprintf(tmp,sizeof(tmp),"Short power press: sleep / wake.\nStock UI after %d seconds idle.",settings_idle);
+    box(16,432,294,36,"footer",tmp);
   } else if(page==WG) {
     header("WireGuard");
     box(12,66,296,112,"card","");
@@ -105,9 +127,9 @@ static void render(struct drm_buf *b) {
     box(18,210,142,28,"value",rx);box(174,210,134,28,"value",tx);
     linkbox(12,248,296,52,"toggle",data.enabled?"Disable WireGuard":"Enable WireGuard",!blocked()&&data.has,1);
     snprintf(tmp,sizeof(tmp),"Profile: %s",active_profile());
-    linkbox(12,312,296,50,"profiles",tmp,1,0);
+    linkbox(12,312,296,50,"profiles",tmp,visible_page(PROFILES),0);
     snprintf(tmp,sizeof(tmp),"Device routing    %d / %d  >",selected_count(),data.n);
-    linkbox(12,374,296,50,"devices",tmp,1,0);
+    linkbox(12,374,296,50,"devices",tmp,visible_page(DEVICES),0);
     box(16,437,294,20,"footer",data.all?"New devices: WireGuard":"New devices: normal network");
     if(notice[0])box(16,457,294,20,"footer bad",notice);
   } else if(page==PROFILES) {
@@ -144,18 +166,17 @@ static void render(struct drm_buf *b) {
     linkbox(166,416,142,52,"save",pending?"Applying":"Save",dirty&&!blocked(),1);
   } else if(page==OVERVIEW) {
     header("Overview");
-    box(12,70,296,220,"card","");
-    snprintf(tmp,sizeof(tmp),"Battery       %s",data.battery<0?"Unavailable":"");
-    if(data.battery>=0)snprintf(tmp,sizeof(tmp),"Battery              %d%%",data.battery);
-    box(24,84,272,26,"",tmp);
+    box(12,66,296,92,"card","");
+    box(24,72,160,20,"small","BATTERY REMAINING");
+    battery_badge(24,110,1);
     if(data.temperature!=-999)snprintf(tmp,sizeof(tmp),"Battery temp       %.1f C",data.temperature/10.0);else strcpy(tmp,"Battery temp          --");
-    box(24,124,272,26,"",tmp);
-    snprintf(tmp,sizeof(tmp),"Uptime        %lluh %llum",data.uptime/3600,data.uptime/60%60);box(24,164,272,26,"",tmp);
-    snprintf(tmp,sizeof(tmp),"CPU                %.1f%%",data.cpu);box(24,204,272,26,"",tmp);
-    if(data.memory>=0)snprintf(tmp,sizeof(tmp),"Memory             %.1f%%",data.memory);else strcpy(tmp,"Memory                --");box(24,244,272,26,"",tmp);
-    box(16,310,290,28,stale()?"small bad":"small",stale()?"Status unavailable / stale":"Live status from OpenUI agent");
+    box(24,172,272,26,"",tmp);
+    snprintf(tmp,sizeof(tmp),"Uptime        %lluh %llum",data.uptime/3600,data.uptime/60%60);box(24,208,272,26,"",tmp);
+    snprintf(tmp,sizeof(tmp),"CPU                %.1f%%",data.cpu);box(24,244,272,26,"",tmp);
+    if(data.memory>=0)snprintf(tmp,sizeof(tmp),"Memory             %.1f%%",data.memory);else strcpy(tmp,"Memory                --");box(24,280,272,26,"",tmp);
+    box(16,320,290,28,stale()?"small bad":"small",stale()?"Status unavailable / stale":"Live status from OpenUI agent");
     snprintf(tmp,sizeof(tmp),"WireGuard: %s",summary());box(16,348,290,32,"",tmp);
-    linkbox(12,406,296,54,"wireguard","Open WireGuard",1,1);
+    linkbox(12,406,296,54,"wireguard","Open WireGuard",visible_page(WG),1);
   }
   add("</body></html>");
   html_view_render_to(pixels,html);

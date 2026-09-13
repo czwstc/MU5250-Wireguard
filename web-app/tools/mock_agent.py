@@ -461,11 +461,13 @@ STATE["wireguard"] = {"profiles": [], "active_profile": None, "max_profiles": 5,
       "latest_handshake": 0, "rx_bytes": 0, "tx_bytes": 0, "error": None, "endpoint": None,
       "address": None, "dns": None, "mtu": None, "ipv6_policy": "blocked_for_tunnel_devices"}
 
-STATE["screen"] = {"available": True, "verified": True, "running": False, "state": "idle"}
+STATE["screen_settings"] = {"revision": 1, "shortcut_enabled": False, "brightness": 128, "idle_seconds": 120, "home_page": "menu", "menu_items": ["overview", "wireguard", "profiles", "devices"]}
+STATE["screen"] = {"available": True, "verified": True, "running": False, "state": "idle", "settings_revision": 1, "shortcut": {"available": True, "message": "Shortcut disabled"}}
 
 ROUTES_GET = {
     "/api/wireguard": lambda: STATE["wireguard"],
     "/api/screen": lambda: STATE["screen"],
+    "/api/screen/settings": lambda: STATE["screen_settings"],
     "/api/dashboard": dashboard_batch,
     "/api/network/clients": clients,
     "/api/device": lambda: dashboard_batch()["device"],
@@ -593,6 +595,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         path = self.path.split("?")[0]
         body = self._body()
+        if path == "/api/screen/settings":
+            old = STATE["screen_settings"]
+            if body.get("expected_revision") != old["revision"]:
+                return self._send({"ok": False, "error": "DevUI settings changed. Reload before saving."}, 409)
+            if not 20 <= body.get("brightness", 0) <= 255 or not 30 <= body.get("idle_seconds", 0) <= 600 or not body.get("menu_items"):
+                return self._send({"ok": False, "error": "Invalid DevUI settings"}, 400)
+            STATE["screen_settings"] = {k: body[k] for k in old if k != "revision"}
+            STATE["screen_settings"]["revision"] = old["revision"] + 1
+            STATE["screen"]["settings_revision"] = old["revision"] + 1
+            STATE["screen"]["shortcut"]["message"] = "Ready: four short presses within 2.5 seconds" if body["shortcut_enabled"] else "Shortcut disabled"
+            return self._send({"ok": True, "data": STATE["screen_settings"]})
         if path == "/api/wireguard" and body.get("expected_revision", STATE["wireguard"]["revision"]) != STATE["wireguard"]["revision"]:
             return self._send({"ok": False, "error": "Configuration changed; refresh before saving"}, 409)
         fn = ROUTES_PUT.get(path)

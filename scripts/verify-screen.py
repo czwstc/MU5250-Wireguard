@@ -54,6 +54,7 @@ try:
  power_log=read('cat /tmp/openui-screen/power-test.log')
  assert power_log.count('power key: display asleep') == 2
  assert power_log.count('power key: display awake') == 1
+ assert 'display startup settled without touch' in power_log
  health(); print('PASS backlight off/on/off readback and stock restoration from sleep',flush=True)
  p=start(4);assert p.wait(timeout=15)==0;health();print('PASS short Atomic display takeover / idle restore / unchanged WG configuration',flush=True)
  for signal in ('KILL','STOP'):

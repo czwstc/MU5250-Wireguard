@@ -437,7 +437,19 @@ export interface WireGuardUpdate {
   config_text?: string
 }
 
+export type DevUIPageId = 'overview' | 'wireguard' | 'profiles' | 'devices'
+export interface DevUISettings {
+  revision: number
+  shortcut_enabled: boolean
+  brightness: number
+  idle_seconds: number
+  home_page: 'menu' | DevUIPageId
+  menu_items: DevUIPageId[]
+}
 export interface ScreenStatus {
+  settings_revision: number
+  shortcut: { available: boolean; message: string }
+
   available: boolean
   verified: boolean
   running: boolean

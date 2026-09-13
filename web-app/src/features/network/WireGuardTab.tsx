@@ -4,7 +4,6 @@ import type { Client, WireGuardStatus, WireGuardProfileAction } from '../../type
 import { Button, Input, Select, Toggle } from '../../ui/controls'
 import { Card, Chip, Stat } from '../../ui/primitives'
 import { confirm, toast, toastError } from '../../ui/feedback'
-import ScreenControl from './ScreenControl'
 
 function bytes(n: number) {
   return n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1024).toFixed(1)} KB`
@@ -133,7 +132,6 @@ export default function WireGuardTab() {
         </div>
       </Card>
 
-      <ScreenControl />
 
       <Card title="Saved configurations" action={<Chip>{profiles.length} / 5</Chip>}>
         <div className="space-y-3">

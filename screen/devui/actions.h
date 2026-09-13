@@ -2,7 +2,7 @@
  * Copyright (c) 2026 ZweiChen. GPL-3.0-or-later. */
 static void back(void) {
   if(dirty&&!pending)dialog=2;
-  else { page=page==WG||page==OVERVIEW?MENU:WG;dirty=0;dialog=0; }
+  else { page=page==WG||page==OVERVIEW||!visible_page(WG)?MENU:WG;dirty=0;dialog=0; }
   need_draw=1;
 }
 static void enter_devices(void) {
@@ -33,10 +33,10 @@ static void tap(int x,int y) {
   }
   if(!strcmp(a,"stock")) { quitting=1;return; }
   if(!strcmp(a,"back")) { back();return; }
-  if(!strcmp(a,"wireguard")) { page=WG;return; }
-  if(!strcmp(a,"overview")) { page=OVERVIEW;return; }
-  if(!strcmp(a,"profiles")) { page=PROFILES;return; }
-  if(!strcmp(a,"devices")) { enter_devices();return; }
+  if(!strcmp(a,"wireguard") && visible_page(WG)) { page=WG;return; }
+  if(!strcmp(a,"overview") && visible_page(OVERVIEW)) { page=OVERVIEW;return; }
+  if(!strcmp(a,"profiles") && visible_page(PROFILES)) { page=PROFILES;return; }
+  if(!strcmp(a,"devices") && visible_page(DEVICES)) { enter_devices();return; }
   if(!strcmp(a,"toggle")&&page==WG&&!blocked()&&data.has) {
     if(data.enabled)dialog=1;else submit(1,1);
   } else if(page==PROFILES&&a[0]=='p'&&a[1]>='0'&&a[1]<='4'&&!a[2]&&!blocked()) {

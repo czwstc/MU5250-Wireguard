@@ -1,10 +1,10 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useAlerts } from './HomeContext'
-import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun, IShield } from '../icons'
+import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun, IShield, IMonitor } from '../icons'
 import { Spinner } from '../ui/primitives'
 
-export type Group = 'home' | 'signal' | 'network' | 'wireguard' | 'modem' | 'system'
+export type Group = 'home' | 'signal' | 'network' | 'wireguard' | 'modem' | 'devui' | 'system'
 
 export const NAV: { id: Group; label: string; icon: (p: { size?: number; className?: string }) => ReactNode }[] = [
   { id: 'home', label: 'Home', icon: (p) => <IHome {...p} /> },
@@ -12,6 +12,7 @@ export const NAV: { id: Group; label: string; icon: (p: { size?: number; classNa
   { id: 'network', label: 'Network', icon: (p) => <IGlobe {...p} /> },
   { id: 'wireguard', label: 'WireGuard', icon: (p) => <IShield {...p} /> },
   { id: 'modem', label: 'Modem', icon: (p) => <ISim {...p} /> },
+  { id: 'devui', label: 'DevUI', icon: (p) => <IMonitor {...p} /> },
   { id: 'system', label: 'System', icon: (p) => <IGauge {...p} /> },
 ]
 
@@ -21,6 +22,7 @@ const GROUP_TITLES: Record<Group, string> = {
   network: 'Network',
   wireguard: 'WireGuard',
   modem: 'Modem',
+  devui: 'DevUI',
   system: 'System',
 }
 

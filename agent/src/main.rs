@@ -15,6 +15,8 @@ mod network_ext;
 mod process;
 mod router;
 mod screen;
+mod screen_settings;
+mod screen_shortcut;
 mod server;
 mod signal_logger;
 mod sim;

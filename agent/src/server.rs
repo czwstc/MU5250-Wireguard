@@ -314,6 +314,8 @@ pub fn route(
         (&Method::Get, "/api/cpu") => handlers::cpu(state),
         (&Method::Get, "/api/memory") => handlers::memory(state),
         (&Method::Get, "/api/system/top") => handlers::system_top(state),
+        (&Method::Get, "/api/screen/settings") => crate::screen_settings::get(),
+        (&Method::Put, "/api/screen/settings") => crate::screen_settings::update(body),
         (&Method::Get, "/api/screen") => screen::get(),
         (&Method::Post, "/api/screen") => screen::open(),
         (&Method::Delete, "/api/screen") => screen::close(),

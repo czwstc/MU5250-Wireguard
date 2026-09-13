@@ -16,3 +16,5 @@ a { text-decoration:none; color:#f2f5fa; }
 .name { margin:5px 10px 0; height:23px; white-space:nowrap; overflow:hidden; }
 .sub { margin:2px 10px 0; font-size:14px; color:#a7b6ca; white-space:nowrap; overflow:hidden; }
 .footer { color:#a7b6ca; font-size:13px; }
+
+.battery-value { font-size:36px; font-weight:bold; color:#f2f5fa; }
