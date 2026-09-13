@@ -1,12 +1,12 @@
 # WireGuard gateway
 
-Network → WireGuard manages one kernel WireGuard client tunnel. Import a standard
+The WireGuard sidebar page manages one kernel WireGuard client tunnel. Import a standard
 single-peer `.conf`, save it, choose devices and enable. A new installation is off.
 The router itself keeps its original WAN route; forwarded devices use the policy.
 
 ## Saved configurations (up to 5)
 
-In **Network → WireGuard**, import a `.conf` and give it a unique name under
+On the **WireGuard** sidebar page, import a `.conf` and give it a unique name under
 **Add client configuration**, then click **Save new profile**. A filename is used
 as the initial name when importing a file. Names allow 1–48 characters.
 

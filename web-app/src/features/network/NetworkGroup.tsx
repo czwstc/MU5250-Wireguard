@@ -3,9 +3,8 @@ import { Tabs } from '../../ui/Tabs'
 import ClientsTab from './ClientsTab'
 import WifiTab from './WifiTab'
 import RouterTab from './RouterTab'
-import WireGuardTab from './WireGuardTab'
 
-type Tab = 'clients' | 'wifi' | 'router' | 'wireguard'
+type Tab = 'clients' | 'wifi' | 'router'
 
 export default function NetworkGroup() {
   const [tab, setTab] = useState<Tab>('clients')
@@ -22,7 +21,6 @@ export default function NetworkGroup() {
           { id: 'clients', label: 'Clients' },
           { id: 'wifi', label: 'Wi-Fi' },
           { id: 'router', label: 'Router' },
-          { id: 'wireguard', label: 'WireGuard' },
         ]}
         active={tab}
         onChange={setTab}
@@ -31,7 +29,6 @@ export default function NetworkGroup() {
       {tab === 'clients' && <ClientsTab />}
       {tab === 'wifi' && <WifiTab />}
       {tab === 'router' && <RouterTab />}
-      {tab === 'wireguard' && <WireGuardTab />}
     </div>
   )
 }

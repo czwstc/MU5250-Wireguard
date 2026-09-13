@@ -1,5 +1,5 @@
 //! Authenticated web lifecycle + root-only local screen protocol. No credentials or keys.
-use crate::{handlers::AppState, network_ext, wireguard};
+use crate::{handlers::AppState, network_ext, system, wireguard};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -137,6 +137,19 @@ fn projection(w: &Value, clients: &[Value]) -> String {
         u8::from(all),
         now()
     );
+    // Only profile IDs, names and selection leave the agent. No endpoints or keys.
+    if let Some(profiles) = w["profiles"].as_array() {
+        for p in profiles.iter().take(5) {
+            if let Some(id) = p["id"].as_u64() {
+                out.push_str(&format!(
+                    "P\t{}\t{}\t{}\n",
+                    id,
+                    u8::from(w["active_profile"].as_u64() == Some(id)),
+                    clean(p["name"].as_str().unwrap_or("Profile"))
+                ));
+            }
+        }
+    }
     let mut rows = std::collections::BTreeMap::<String, Value>::new();
     for c in clients {
         if let Some(m) = c["mac"].as_str() {
@@ -174,6 +187,13 @@ fn action(line: &str) -> Result<Value, &'static str> {
     match words[0] {
         "toggle" if words[2] == "0" || words[2] == "1" => {
             Ok(json!({"expected_revision":revision,"enabled":words[2]=="1"}))
+        }
+        "profile" => {
+            let id = words[2].parse::<u64>().map_err(|_| "Invalid profile ID")?;
+            if id == 0 {
+                return Err("Invalid profile ID");
+            }
+            Ok(json!({"expected_revision":revision,"profile":{"action":"activate","id":id}}))
         }
         "devices" => {
             let mut devices = vec![];
@@ -264,7 +284,20 @@ pub fn start(state: Arc<AppState>) {
                 }
                 let (code, v) = wireguard::get();
                 if code == 200 {
-                    *SNAPSHOT.lock().unwrap() = projection(&v["data"], &clients);
+                    let mut snapshot = projection(&v["data"], &clients);
+                    let battery = system::read_battery();
+                    let device = system::read_device_info();
+                    let memory = system::read_meminfo();
+                    let cpu = state.cpu.sample();
+                    snapshot.push_str(&format!(
+                        "O {} {} {} {:.1} {:.1}\n",
+                        battery.as_ref().map_or(-1, |b| b.capacity),
+                        battery.as_ref().map_or(-999, |b| b.temperature),
+                        device.uptime_secs,
+                        memory.map_or(-1.0, |m| m.usage_pct),
+                        cpu.overall
+                    ));
+                    *SNAPSHOT.lock().unwrap() = snapshot;
                 }
             }
             std::thread::sleep(Duration::from_secs(2));
@@ -295,9 +328,31 @@ mod tests {
             action("toggle 8 1").unwrap(),
             json!({"expected_revision":8,"enabled":true})
         );
+        assert_eq!(
+            action("profile 8 2").unwrap(),
+            json!({"expected_revision":8,"profile":{"action":"activate","id":2}})
+        );
+        for input in [
+            "profile 8 0",
+            "profile 8 -1",
+            "profile 8 x",
+            "profile 8 2 extra",
+        ] {
+            assert!(action(input).is_err());
+        }
         assert!(action("toggle 8 true").is_err());
         assert!(action("config 8 secret").is_err());
         assert!(action("devices 8 aa=2").is_err());
+    }
+    #[test]
+    fn profile_projection_omits_credentials_and_escapes_protocol() {
+        let v = json!({"active_profile":2,"profiles":[
+            {"id":1,"name":"Home\nVPN","endpoint":"private.example","private_key":"secret"},
+            {"id":2,"name":"Travel\tVPN","preshared_key":"secret"}]});
+        let s = projection(&v, &[]);
+        assert!(s.contains("P\t1\t0\tHomeVPN\n"));
+        assert!(s.contains("P\t2\t1\tTravelVPN\n"));
+        assert!(!s.contains("secret") && !s.contains("private.example"));
     }
     #[test]
     fn snapshot_redacts_and_keeps_offline_choices() {

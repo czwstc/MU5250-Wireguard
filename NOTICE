@@ -16,5 +16,8 @@ and screen additions included. Source copied on 2026-09-13.
 The separately built screen/panel.c and screen/qpic.h are GPL-3.0-or-later,
 including adapted DRM code from https://github.com/amenekowo/mu5250_tweaking.
 See screen/LICENSE and screen/NOTICE. The root MIT license does not relicense
-these GPL files. The GNU Unifont bitmap uses SIL OFL 1.1; see screen/FONT-LICENSE
+these GPL files. The GNU Unifont OTF font uses SIL OFL 1.1; see screen/FONT-LICENSE
 and screen/FONT-COPYING. Dependencies retain their own respective licenses.
+
+The DevUI renderer is adapted from 33333s/u60pro-devui (MIT); its copyright
+and dependency licenses are preserved in screen/THIRD-PARTY-LICENSES.

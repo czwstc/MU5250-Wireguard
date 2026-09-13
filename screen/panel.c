@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -39,7 +40,8 @@ static void draw_pixel(struct drm_buf *b, int x, int y, uint16_t c) {
     b->map[y * W + x] = c;
 }
 #endif
-#include "font.h"
+#include "devui/html.h"
+#include "devui_assets.h"
 #define MAX_ROWS 128
 #define BG 0x0863
 #define CARD 0x1926
@@ -54,80 +56,28 @@ struct row {
   char mac[18], ip[48], name[193];
   int selected, online;
 };
+struct profile { unsigned long long id; int active; char name[193]; };
 struct snapshot {
   unsigned long long rev, handshake, rx, tx, stamp, job, done;
   int has, enabled, connected, error, all, busy, result, n;
+  int np, battery, temperature;
+  unsigned long long uptime;
+  double memory, cpu;
+  struct profile profiles[5];
   struct row rows[MAX_ROWS];
 };
 static struct snapshot data, draft;
 static int original_selection[MAX_ROWS];
-static int page, offset, dialog, dirty, quitting, need_draw = 1,
+enum { WG, DEVICES, MENU, PROFILES, OVERVIEW };
+static int page = MENU, offset, dialog, dirty, quitting, need_draw = 1,
                                                   return_after_save;
-static unsigned long long pending, pending_revision;
+static unsigned long long pending, pending_revision, chosen_profile, chosen_revision;
+static char chosen_name[193];
 static char notice[128];
 static long long monotonic_ms(void) {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
-}
-static unsigned codepoint(const char **p) {
-  const unsigned char *s = (const unsigned char *)*p;
-  unsigned c = *s++;
-  int n = 0;
-  if (c >= 0xf0 && c <= 0xf4) {
-    c &= 7;
-    n = 3;
-  } else if (c >= 0xe0 && c <= 0xef) {
-    c &= 15;
-    n = 2;
-  } else if (c >= 0xc2 && c <= 0xdf) {
-    c &= 31;
-    n = 1;
-  } else if (c >= 128)
-    c = '?';
-  for (int i = 0; i < n; i++) {
-    if ((*s & 0xc0) != 0x80) {
-      c = '?';
-      break;
-    }
-    c = (c << 6) | (*s++ & 63);
-  }
-  *p = (const char *)s;
-  return c < 65536 ? c : '?';
-}
-static int text_width(const char *s, int size) {
-  int x = 0;
-  while (*s) {
-    unsigned c = codepoint(&s);
-    x += (font[c][0] ? font[c][0] : 8) * size / 16 + 1;
-  }
-  return x;
-}
-static void text(struct drm_buf *b, int x, int y, const char *s, int size,
-                 uint16_t col, int maxw) {
-  int start = x;
-  while (*s) {
-    unsigned c = codepoint(&s);
-    if (!font[c][0])
-      c = '?';
-    int w = font[c][0], dw = w * size / 16;
-    if (x + dw > start + maxw)
-      break;
-    for (int j = 0; j < size; j++)
-      for (int i = 0; i < dw; i++) {
-        int sy = j * 16 / size, sx = i * 16 / size;
-        unsigned v = font[c][1 + sy * (w / 8) + sx / 8];
-        if (v & (128 >> (sx % 8)))
-          draw_pixel(b, x + i, y + j, col);
-      }
-    x += dw + 1;
-  }
-}
-static void button(struct drm_buf *b, int x, int y, int w, int h, const char *s,
-                   uint16_t col) {
-  fill_rect(b, x, y, x + w, y + h, col);
-  int tw = text_width(s, 20);
-  text(b, x + (w - tw) / 2, y + (h - 20) / 2, s, 20, FG, w - 8);
 }
 static void amount(char *out, size_t n, unsigned long long v) {
   if (v >= 1073741824)
@@ -141,118 +91,7 @@ static int stale(void) {
   return !data.stamp || (unsigned long long)time(NULL) > data.stamp + 10;
 }
 static int blocked(void) { return pending || data.busy || stale(); }
-static void render(struct drm_buf *b) {
-  char tmp[128], rx[32], tx[32];
-  fill(b, BG);
-  text(b, 16, 18, page ? "Devices" : "WireGuard", 22, FG, 185);
-  button(b, 210, 4, 106, 48, page ? "Back" : "Stock UI", CARD);
-  if (!page) {
-    fill_rect(b, 12, 68, 308, 194, CARD);
-    const char *status = !data.stamp            ? "Loading status"
-                         : pending || data.busy ? "Applying changes"
-                         : stale()              ? "Status is stale"
-                         : !data.has            ? "No configuration"
-                         : data.error           ? "Tunnel error"
-                         : !data.enabled        ? "Off"
-                         : data.connected       ? "Handshake recent"
-                                                : "Awaiting handshake";
-    text(b, 26, 86, status, 26,
-         data.error || stale() ? RED
-         : data.connected      ? GREEN
-                               : FG,
-         276);
-    if (!data.has)
-      strcpy(tmp, "Import a config in OpenUI");
-    else if (!data.enabled)
-      strcpy(tmp, "Devices use normal internet");
-    else if (data.handshake)
-      snprintf(tmp, sizeof(tmp), "Last handshake: %llu s ago",
-               (unsigned long long)time(NULL) > data.handshake
-                   ? (unsigned long long)time(NULL) - data.handshake
-                   : 0);
-    else
-      strcpy(tmp, "Waiting for the server");
-    text(b, 26, 138, tmp, 16, MUTED, 270);
-    text(b, 26, 164, "Internet access not verified", 16, MUTED, 270);
-    text(b, 18, 210, "Downloaded", 16, MUTED, 140);
-    text(b, 174, 210, "Uploaded", 16, MUTED, 135);
-    amount(rx, sizeof(rx), data.rx);
-    amount(tx, sizeof(tx), data.tx);
-    text(b, 18, 234, rx, 24, FG, 145);
-    text(b, 174, 234, tx, 24, FG, 140);
-    button(b, 12, 282, 296, 56,
-           data.enabled ? "Disable WireGuard" : "Enable WireGuard",
-           blocked() || !data.has ? CARD : BLUE);
-    int selected = 0;
-    for (int i = 0; i < data.n; i++)
-      selected += data.rows[i].selected;
-    snprintf(tmp, sizeof(tmp), "Devices   %d / %d >", selected, data.n);
-    button(b, 12, 354, 296, 56, tmp, CARD);
-    text(b, 16, 428,
-         data.all ? "New devices: WireGuard" : "New devices: normal network",
-         16, MUTED, 294);
-    text(b, 16, 452, notice[0] ? notice : "Returns to stock UI after 2 min", 16,
-         notice[0] ? RED : MUTED, 294);
-  } else {
-    text(b, 16, 62,
-         draft.all ? "New devices: WireGuard" : "New devices: normal network",
-         16, MUTED, 290);
-    text(b, 16, 82,
-         data.enabled ? "Checked: WG | unchecked: direct"
-                      : "Active when tunnel is enabled",
-         16, MUTED, 290);
-    for (int i = 0; i < 4 && offset + i < draft.n; i++) {
-      struct row *r = &draft.rows[offset + i];
-      int y = 106 + i * 60;
-      fill_rect(b, 12, y, 308, y + 56, CARD);
-      text(b, 20, y + 17, r->selected ? "[x]" : "[ ]", 20,
-           r->selected ? GREEN : MUTED, 38);
-      int duplicate = 0;
-      for (int j = 0; j < draft.n; j++)
-        if (j != offset + i && !strcmp(r->name, draft.rows[j].name))
-          duplicate = 1;
-      const char *name = strcmp(r->name, "-") ? r->name : "Unknown device";
-      text(b, 62, y + 5, name, 18, FG,
-           duplicate || !strcmp(r->name, "-") ? 153 : 235);
-      if (duplicate || !strcmp(r->name, "-"))
-        text(b, 224, y + 6, r->mac + 9, 14, MUTED, 78);
-      snprintf(tmp, sizeof(tmp), "%s  %s", r->online ? "Online" : "Offline",
-               r->ip);
-      text(b, 62, y + 32, tmp, 16, MUTED, 235);
-    }
-    if (!draft.n)
-      text(b, 38, 196, "No devices found", 18, MUTED, 250);
-    button(b, 12, 354, 96, 48, "Previous", offset ? BLUE : CARD);
-    button(b, 212, 354, 96, 48, "Next", offset + 4 < draft.n ? BLUE : CARD);
-    snprintf(tmp, sizeof(tmp), "%d / %d", offset / 4 + 1,
-             (draft.n + 3) / 4 ? (draft.n + 3) / 4 : 1);
-    text(b, 125, 369, tmp, 18, MUTED, 80);
-    button(b, 12, 416, 142, 52, "Cancel", CARD);
-    button(b, 166, 416, 142, 52, pending ? "Applying" : "Save",
-           dirty && !blocked() ? BLUE : CARD);
-  }
-  if (dialog) {
-    fill_rect(b, 0, 56, W, H, BG);
-    fill_rect(b, 12, 108, 308, 466, CARD);
-    if (dialog == 1) {
-      text(b, 30, 135, "Disable WireGuard?", 24, FG, 270);
-      text(b, 30, 190, "Devices will return to", 20, MUTED, 265);
-      text(b, 30, 220, "the normal network.", 20, MUTED, 260);
-      button(b, 24, 300, 128, 56, "Cancel", BG);
-      button(b, 168, 300, 128, 56, "Disable", BLUE);
-    } else if (dialog == 2) {
-      text(b, 30, 132, "Unsaved changes", 24, FG, 265);
-      button(b, 24, 210, 272, 56, "Save and return", BLUE);
-      button(b, 24, 282, 272, 56, "Discard changes", BG);
-      button(b, 24, 354, 272, 56, "Keep editing", BG);
-    } else {
-      text(b, 26, 136, "Action failed", 24, RED, 275);
-      text(b, 26, 190, notice, 16, FG, 275);
-      text(b, 26, 222, "Refresh or check OpenUI.", 16, MUTED, 275);
-      button(b, 24, 300, 272, 56, "Refresh and back", BLUE);
-    }
-  }
-}
+#include "devui/render.h"
 // The LCD and raw touch axes are mounted upside down relative to the case.
 // Keep layout coordinates upright; transform only at the hardware boundary.
 static void rotate_point(int *x, int *y) {
@@ -271,7 +110,7 @@ static void rotate_frame(struct drm_buf *b) {
   }
 }
 static int parse_snapshot(char *buf, struct snapshot *out) {
-  struct snapshot s = {0};
+  struct snapshot s = {.battery = -1, .temperature = -999, .memory = -1};
   char *save, *line = strtok_r(buf, "\n", &save);
   int valid = 0;
   while (line) {
@@ -282,7 +121,14 @@ static int parse_snapshot(char *buf, struct snapshot *out) {
       valid = 1;
     else if (line[0] == 'J')
       sscanf(line, "J %d %llu %llu %d", &s.busy, &s.job, &s.done, &s.result);
-    else if (line[0] == 'D' && s.n < MAX_ROWS) {
+    else if (line[0] == 'O')
+      sscanf(line, "O %d %d %llu %lf %lf", &s.battery, &s.temperature, &s.uptime, &s.memory, &s.cpu);
+    else if (line[0] == 'P' && s.np < 5) {
+      struct profile *p = &s.profiles[s.np];
+      if (sscanf(line, "P\t%llu\t%d\t%192[^\n]", &p->id, &p->active, p->name) == 3 && p->id)
+        s.np++;
+    }
+    else if (line[0] == 'D'  && s.n < MAX_ROWS) {
       struct row *r = &s.rows[s.n];
       char *sv, *p = strtok_r(line, "\t", &sv);
       int i = 0;
@@ -351,7 +197,9 @@ static void submit(int toggle, int value) {
   char req[4096], reply[128];
   if (blocked())
     return;
-  if (toggle)
+  if (toggle == 2)
+    snprintf(req, sizeof(req), "profile %llu %llu\n", chosen_revision, chosen_profile);
+  else if (toggle)
     snprintf(req, sizeof(req), "toggle %llu %d\n", data.rev, value);
   else {
     size_t n = (size_t)snprintf(req, sizeof(req), "devices %llu ", draft.rev);
@@ -365,12 +213,12 @@ static void submit(int toggle, int value) {
     }
     if (!count) {
       dirty = 0;
-      page = 0;
+      page = WG;
       return;
     }
     snprintf(req + n, sizeof(req) - n, "\n");
   }
-  pending_revision = toggle ? data.rev : draft.rev;
+  pending_revision = toggle == 2 ? chosen_revision : toggle ? data.rev : draft.rev;
   if (exchange(req, reply, sizeof(reply)) == 0 &&
       sscanf(reply, "OK %llu", &pending) == 1) {
     dialog = 0;
@@ -382,100 +230,7 @@ static void submit(int toggle, int value) {
   }
   need_draw = 1;
 }
-static void back(void) {
-  if (dirty && !pending) {
-    dialog = 2;
-  } else {
-    page = 0;
-    dirty = 0;
-    dialog = 0;
-  }
-  need_draw = 1;
-}
-static void tap(int x, int y) {
-  need_draw = 1;
-  if (dialog == 1) {
-    if (y >= 300 && y < 356) {
-      if (x < 160)
-        dialog = 0;
-      else
-        submit(1, 0);
-    }
-    return;
-  }
-  if (dialog == 2) {
-    if (y >= 210 && y < 266) {
-      return_after_save = 1;
-      submit(0, 0);
-    } else if (y >= 282 && y < 338) {
-      dirty = 0;
-      page = 0;
-      dialog = 0;
-    } else if (y >= 354 && y < 410)
-      dialog = 0;
-    return;
-  }
-  if (dialog == 3) {
-    if (y >= 300 && y < 356) {
-      dialog = 0;
-      page = 0;
-      dirty = 0;
-      notice[0] = 0;
-    }
-    return;
-  }
-  if (y < 52 && x >= 210) {
-    if (page)
-      back();
-    else
-      quitting = 1;
-    return;
-  }
-  if (!page) {
-    if (y >= 282 && y < 338 && !blocked() && data.has) {
-      if (data.enabled)
-        dialog = 1;
-      else
-        submit(1, 1);
-    } else if (y >= 354 && y < 410 && !pending && !stale()) {
-      draft = data;
-      for (int i = 0; i < draft.n; i++)
-        original_selection[i] = draft.rows[i].selected;
-      page = 1;
-      offset = 0;
-      dirty = 0;
-    }
-    return;
-  }
-  if (y >= 416 && y < 468 && x >= 12 && x < 308) {
-    if (x < 160)
-      back();
-    else if (dirty) {
-      return_after_save = 0;
-      submit(0, 0);
-    }
-    return;
-  }
-  if (pending)
-    return;
-  if (y >= 354 && y < 402) {
-    if (x < 108 && offset > 0)
-      offset -= 4;
-    else if (x >= 212 && offset + 4 < draft.n)
-      offset += 4;
-    return;
-  }
-  if (y >= 106 && y < 346 && x >= 12 && x < 308) {
-    int i = offset + (y - 106) / 60;
-    if (i < draft.n && (y - 106) % 60 < 56) {
-      draft.rows[i].selected = !draft.rows[i].selected;
-      dirty = 0;
-      for (int j = 0; j < draft.n; j++)
-        if (draft.rows[j].selected != original_selection[j])
-          dirty = 1;
-    }
-  }
-}
+#include "devui/actions.h"
 #ifndef SCREEN_PREVIEW
 static void putfile(const char *path, const char *s) {
   char tmp[256];
@@ -723,6 +478,10 @@ static int input_event(struct input_touch *t, struct input_event *e) {
   return t->id[0] >= 0;
 }
 static int input_self_test(void) {
+  struct drm_buf frame = {.pitch = W * 2, .map = calloc(W * H, 2)};
+  assert(frame.map);
+  page = MENU;
+  render(&frame);
   int x = 0, y = 0;
   rotate_point(&x, &y);
   assert(x == 319 && y == 479);
@@ -772,10 +531,12 @@ static int input_self_test(void) {
     input_event(&t, &e);
   }
   assert(!quitting);
+  free(frame.map);
   puts("Rotated MT-B tap, drag rejection and dropped-event tests passed");
   return 0;
 }
 static int panel(int heartbeat, int idle_seconds) {
+  page = MENU;
   struct qpic_ctx drm;
   struct input_touch input;
   int result = 1;
@@ -812,12 +573,12 @@ static int panel(int heartbeat, int idle_seconds) {
               pending = 0;
               dirty = 0;
               notice[0] = 0;
-              if (page) {
+              if (page == DEVICES) {
                 draft = data;
                 for (int i = 0; i < draft.n; i++)
                   original_selection[i] = draft.rows[i].selected;
                 if (return_after_save)
-                  page = 0;
+                  page = WG;
               }
               return_after_save = 0;
             }
@@ -995,8 +756,20 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--self-test"))
     return input_self_test();
   if (argc == 2 && !strcmp(argv[1], "--version")) {
-    puts("openui-screen 1");
+    puts("openui-screen 2 DevUI / Atomic / OpenUI agent");
     return 0;
+  }
+  if (argc == 2 && !strcmp(argv[1], "--ipc-check")) {
+    // Read-only integration probe; never prints names, addresses or credentials.
+    char reply[49152];struct snapshot snap;
+    for(int i=0;i<8;i++) {
+      if(exchange("status\n",reply,sizeof(reply))==0&&parse_snapshot(reply,&snap)&&snap.stamp) {
+        printf("Agent IPC: %d profiles, %d devices, overview=%s\n",snap.np,snap.n,snap.uptime?"ready":"unavailable");
+        return snap.uptime?0:1;
+      }
+      usleep(500000);
+    }
+    return 1;
   }
   if (argc == 2 && !strcmp(argv[1], "--probe")) {
     struct input_touch t;
@@ -1032,81 +805,67 @@ static void dump(struct drm_buf *b, const char *path) {
   }
   fclose(f);
 }
+static void capture(struct drm_buf *b,const char *dir,const char *name) {
+  char path[512];render(b);snprintf(path,sizeof(path),"%s/%s.ppm",dir,name);dump(b,path);
+}
+static void press_id(struct drm_buf *b,const char *id) {
+  render(b);
+  char selector[48];snprintf(selector,sizeof(selector),"#%s",id);
+  int x,y,w,h;
+  assert(html_view_rect(selector,&x,&y,&w,&h));
+  assert(w>=48&&h>=48&&x>=0&&y>=0&&x+w<=W&&y+h<=H);
+  tap(x+w/2,y+h/2);
+}
 int main(int argc, char **argv) {
-  if (argc < 2)
-    return 2;
-  // Exercise asymmetric corners and row padding independently of UI layout.
-  struct drm_buf padded = {.pitch = (W + 3) * 2, .map = calloc((W + 3) * H, 2)};
-  assert(padded.map);
-  padded.map[0] = 1;
-  padded.map[W - 1] = 2;
-  padded.map[(W + 3) * (H - 1)] = 3;
-  padded.map[(W + 3) * (H - 1) + W - 1] = 4;
-  padded.map[W] = 0x1234;
+  if(argc<2)return 2;
+  struct drm_buf b={.pitch=W*2,.map=calloc(W*H,2)};
+  assert(b.map);
+  struct drm_buf padded={.pitch=(W+3)*2,.map=calloc((W+3)*H,2)};
+  assert(padded.map);padded.map[0]=1;padded.map[W-1]=2;
+  padded.map[(W+3)*(H-1)]=3;padded.map[(W+3)*(H-1)+W-1]=4;padded.map[W]=0x1234;
   rotate_frame(&padded);
-  assert(padded.map[0] == 4 && padded.map[W - 1] == 3);
-  assert(padded.map[(W + 3) * (H - 1)] == 2);
-  assert(padded.map[(W + 3) * (H - 1) + W - 1] == 1);
-  assert(padded.map[W] == 0x1234);
-  rotate_frame(&padded);
-  assert(padded.map[0] == 1 && padded.map[W - 1] == 2);
-  free(padded.map);
-  char example[2048];
-  snprintf(
-      example, sizeof(example),
-      "S 7 1 1 1 0 %llu 134217728 25165824 1 "
-      "%llu\nD\t02:11:22:33:44:55\t1\t1\t192.0.2.2\tWork laptop\nD\t02:11:22:"
-      "33:44:56\t0\t1\t192.0.2.3\tiPhone\nD\t02:11:22:33:44:57\t1\t0\t-\t-"
-      "\nJ 0 0 0 0\n.\n",
-      (unsigned long long)time(NULL) - 15, (unsigned long long)time(NULL));
-  assert(parse_snapshot(example, &data));
-  assert(data.n == 3);
-  assert(data.rows[1].selected == 0);
-  struct drm_buf b = {.pitch = 640, .map = calloc(W * H, 2)};
-  char path[512];
-  render(&b);
-  snprintf(path, sizeof(path), "%s/home.ppm", argv[1]);
-  dump(&b, path);
-  rotate_frame(&b);
-  snprintf(path, sizeof(path), "%s/home-panel.ppm", argv[1]);
-  dump(&b, path);
-  tap(30, 370);
-  assert(page == 1);
-  tap(70, 185);
-  assert(dirty);
-  assert(draft.rows[1].selected == 1);
-  render(&b);
-  snprintf(path, sizeof(path), "%s/devices.ppm", argv[1]);
-  dump(&b, path);
-  tap(230, 20);
-  assert(dialog == 2);
-  render(&b);
-  snprintf(path, sizeof(path), "%s/unsaved.ppm", argv[1]);
-  dump(&b, path);
-  tap(60, 235);
-  assert(strstr(test_request, "devices 7 "));
-  assert(pending == 1);
-  pending = 0;
-  dialog = 0;
-  page = 0;
-  tap(70, 300);
-  assert(dialog == 1);
-  render(&b);
-  snprintf(path, sizeof(path), "%s/confirm.ppm", argv[1]);
-  dump(&b, path);
-  tap(220, 320);
-  assert(!strcmp(test_request, "toggle 7 0\n"));
-  pending = 0;
-  dialog = 0;
-  data.has = 0;
-  data.enabled = 0;
-  data.connected = 0;
-  render(&b);
-  snprintf(path, sizeof(path), "%s/unconfigured.ppm", argv[1]);
-  dump(&b, path);
-  puts("Screen parser, selection, confirmation and versioned action tests "
-       "passed");
-  free(b.map);
+  assert(padded.map[0]==4&&padded.map[W-1]==3&&padded.map[W]==0x1234);
+  rotate_frame(&padded);assert(padded.map[0]==1);free(padded.map);
+  char example[4096];
+  snprintf(example,sizeof(example),
+    "S 7 1 1 1 0 %llu 134217728 25165824 1 %llu\n"
+    "D\t02:11:22:33:44:55\t1\t1\t192.0.2.2\tWork laptop\n"
+    "D\t02:11:22:33:44:56\t0\t1\t192.0.2.3\tiPhone\n"
+    "D\t02:11:22:33:44:57\t1\t0\t-\t-\n"
+    "D\t02:11:22:33:44:58\t0\t0\t-\tWork laptop\n"
+    "D\t02:11:22:33:44:59\t0\t0\t-\t<a href='act:stock'> A very long device name\n"
+    "P\t1\t1\tHome VPN\nP\t2\t0\tTravel VPN\nP\t3\t0\tWork VPN\n"
+    "P\t4\t0\tBackup VPN\nP\t5\t0\tA long profile name <a href='act:stock'>\n"
+    "O 83 320 18372 34.5 12.4\nJ 0 0 0 0\n.\n",
+    (unsigned long long)time(NULL)-15,(unsigned long long)time(NULL));
+  assert(parse_snapshot(example,&data));assert(data.n==5&&data.np==5&&data.battery==83);
+  capture(&b,argv[1],"menu");press_id(&b,"overview");assert(page==OVERVIEW);
+  capture(&b,argv[1],"overview");press_id(&b,"back");assert(page==MENU);
+  press_id(&b,"wireguard");assert(page==WG);capture(&b,argv[1],"home");
+  rotate_frame(&b);char path[512];snprintf(path,sizeof(path),"%s/home-panel.ppm",argv[1]);dump(&b,path);
+  press_id(&b,"devices");assert(page==DEVICES);press_id(&b,"d1");assert(dirty&&draft.rows[1].selected);
+  capture(&b,argv[1],"devices");press_id(&b,"next");assert(offset==4);
+  capture(&b,argv[1],"devices-page2");assert(strstr(html,"&lt;a href="));
+  press_id(&b,"prev");assert(offset==0);press_id(&b,"back");assert(dialog==2);
+  capture(&b,argv[1],"unsaved");press_id(&b,"saveback");assert(strstr(test_request,"devices 7 ")&&pending==1);
+  pending=0;dirty=0;dialog=0;page=WG;
+  press_id(&b,"toggle");assert(dialog==1);capture(&b,argv[1],"confirm");press_id(&b,"confirm");
+  assert(!strcmp(test_request,"toggle 7 0\n"));pending=0;dialog=0;
+  press_id(&b,"profiles");assert(page==PROFILES);capture(&b,argv[1],"profiles");
+  press_id(&b,"p4");assert(chosen_profile==5&&chosen_revision==7&&dialog==4);
+  capture(&b,argv[1],"profile-confirm");data.rev=8;
+  press_id(&b,"confirm");assert(!strcmp(test_request,"profile 7 5\n"));
+  pending=0;dialog=3;strcpy(notice,"Settings changed. Refresh.");capture(&b,argv[1],"conflict");
+  press_id(&b,"refresh");assert(page==WG&&!dirty&&!dialog);
+  data.has=0;data.enabled=0;data.connected=0;capture(&b,argv[1],"unconfigured");
+  test_request[0]=0;press_id(&b,"toggle");assert(!test_request[0]);
+  data.has=1;capture(&b,argv[1],"off");
+  data.enabled=1;data.handshake=0;capture(&b,argv[1],"waiting");
+  data.error=1;capture(&b,argv[1],"error");data.error=0;
+  data.stamp=(unsigned long long)time(NULL)-20;capture(&b,argv[1],"stale");
+  press_id(&b,"toggle");assert(!test_request[0]);
+  page=MENU;press_id(&b,"stock");assert(quitting);
+  free(b.map);puts("PASS DevUI HTML hit testing, menu navigation, profile version capture, device pagination/drafts, escaping, confirmations, disabled states and rotation");
   return 0;
 }
 #endif

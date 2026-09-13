@@ -1,15 +1,16 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useAlerts } from './HomeContext'
-import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun } from '../icons'
+import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun, IShield } from '../icons'
 import { Spinner } from '../ui/primitives'
 
-export type Group = 'home' | 'signal' | 'network' | 'modem' | 'system'
+export type Group = 'home' | 'signal' | 'network' | 'wireguard' | 'modem' | 'system'
 
 export const NAV: { id: Group; label: string; icon: (p: { size?: number; className?: string }) => ReactNode }[] = [
   { id: 'home', label: 'Home', icon: (p) => <IHome {...p} /> },
   { id: 'signal', label: 'Signal', icon: (p) => <ISignal {...p} /> },
   { id: 'network', label: 'Network', icon: (p) => <IGlobe {...p} /> },
+  { id: 'wireguard', label: 'WireGuard', icon: (p) => <IShield {...p} /> },
   { id: 'modem', label: 'Modem', icon: (p) => <ISim {...p} /> },
   { id: 'system', label: 'System', icon: (p) => <IGauge {...p} /> },
 ]
@@ -18,6 +19,7 @@ const GROUP_TITLES: Record<Group, string> = {
   home: 'Home',
   signal: 'Signal',
   network: 'Network',
+  wireguard: 'WireGuard',
   modem: 'Modem',
   system: 'System',
 }

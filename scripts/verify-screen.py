@@ -47,6 +47,7 @@ def start(seconds=120):
 config_hash=read('if test -f /data/local/tmp/openui-wireguard/config.json; then sha256sum /data/local/tmp/openui-wireguard/config.json; else printf absent; fi').split()[0]
 route=read('ip -4 route show default')
 try:
+ print(read('/data/bin/openui-screen --self-test; /data/bin/openui-screen --ipc-check'),flush=True)
  p=start(4);assert p.wait(timeout=15)==0;health();print('PASS short Atomic display takeover / idle restore / unchanged WG configuration',flush=True)
  for signal in ('KILL','STOP'):
   p=start()

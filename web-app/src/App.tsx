@@ -9,6 +9,7 @@ import { ConfirmHost, Toaster } from './ui/feedback'
 const HomePage = lazy(() => import('./features/home/HomePage'))
 const SignalGroup = lazy(() => import('./features/signal/SignalGroup'))
 const NetworkGroup = lazy(() => import('./features/network/NetworkGroup'))
+const WireGuardPage = lazy(() => import('./features/network/WireGuardPage'))
 const ModemGroup = lazy(() => import('./features/modem/ModemGroup'))
 const SystemGroup = lazy(() => import('./features/system/SystemGroup'))
 
@@ -39,6 +40,7 @@ export default function App() {
           {group === 'home' && <HomePage />}
           {group === 'signal' && <SignalGroup />}
           {group === 'network' && <NetworkGroup />}
+          {group === 'wireguard' && <WireGuardPage />}
           {group === 'modem' && <ModemGroup />}
           {group === 'system' && (
             <SystemGroup

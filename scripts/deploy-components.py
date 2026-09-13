@@ -365,7 +365,7 @@ def deploy(args):
             transport.shell('test ! -e /tmp/openui-screen/owner; mkdir -p /data/bin /data/local/tmp/openui-screen-licenses')
             transport.push(programs['openui-screen'], '/data/bin/openui-screen.staged', True)
             transport.shell('/data/bin/openui-screen.staged --version >/dev/null; rm -f /data/local/tmp/openui-screen-verified; mv /data/bin/openui-screen.staged /data/bin/openui-screen')
-            for name in ('LICENSE', 'NOTICE', 'FONT-LICENSE', 'FONT-COPYING'):
+            for name in ('LICENSE', 'NOTICE', 'FONT-LICENSE', 'FONT-COPYING', 'THIRD-PARTY-LICENSES'):
                 transport.push((ROOT / 'screen' / name).read_bytes(), '/data/local/tmp/openui-screen-licenses/' + name)
         if args.agent:
             # Complete and hash-check both staged files before stopping the process.
