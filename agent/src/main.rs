@@ -13,6 +13,7 @@ mod lan;
 mod logging;
 mod network_ext;
 mod process;
+mod qos;
 mod router;
 mod screen;
 mod screen_settings;

@@ -620,6 +620,7 @@ function mapHome(d: Record<string, unknown>): HomeData {
 // ── API surface ───────────────────────────────────────────────────────────────
 
 export const api = {
+  modemQos: () => get('/api/modem/qos'),
   screenSettings: () => get('/api/screen/settings').then(d => d as unknown as DevUISettings),
   screenSettingsSet: (body: Omit<DevUISettings, 'revision'> & { expected_revision: number }) => req('PUT', '/api/screen/settings', body).then(d => d as unknown as DevUISettings),
   screen: () => get('/api/screen').then(d => d as unknown as ScreenStatus),

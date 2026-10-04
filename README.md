@@ -166,11 +166,11 @@ idle, crash and stalled-panel recovery. Short-press the power button to turn the
 DevUI backlight off or wake it; touch actions are ignored while dark. The existing
 configured idle return still applies (two minutes by default). Long presses remain with the factory handler. Details: [screen documentation](docs/SCREEN.md).
 
-The inherited desktop installer and upstream release downloads are retained as
-OpenUI tooling; they are **not release packages for this fork's WireGuard feature**.
-An upstream installer/update can overwrite the additions. Use the source build
-and component deployment above for this fork. For devices without working OpenUI
-or SSH, consult [upstream setup and firmware compatibility](docs/DEPLOYMENT.md).
+The native macOS installer and management client have moved to the independent
+`MU5250-OpenUIClient` project. It uses SwiftUI/AppKit and installs this fork's
+complete format-v2 offline bundle, including WireGuard and DevUI. Generate one
+with `scripts/build-offline-bundle.sh`. Upstream installer packages do not contain
+these additions and can overwrite them. Terminal deployment remains available.
 
 ## Local demo and checks
 
@@ -258,3 +258,7 @@ See [NOTICE](NOTICE), [screen notices](screen/NOTICE) and [preserved upstream
 licenses](licenses/). The root MIT license does not relicense GPL screen code or
 third-party fonts. Distributing the GPL screen executable requires its corresponding
 source and applicable notices; the screen source and build scripts are provided here.
+
+### Native macOS client and complete component bundles
+
+The desktop installer now lives in the independent MU5250-OpenUIClient project (SwiftUI/AppKit, macOS 15+). Build complete local component directories with `scripts/build-offline-bundle.sh`; format-v2 includes Agent, dashboard, wg, supervised DevUI, pinned server dependencies, licenses and per-file SHA-256. Legacy two-component release assets remain available for shell workflows. The release workflow also builds a complete bundle archive; the client currently accepts local directories and has online updates disabled. See [QoS API](docs/API-QOS.md) for authenticated real bearer data.

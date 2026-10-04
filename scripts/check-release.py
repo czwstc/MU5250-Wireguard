@@ -11,11 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     versions = {}
-    for name in ['agent/Cargo.toml', 'installer/src-tauri/Cargo.toml']:
+    for name in ['agent/Cargo.toml']:
         versions[name] = re.search(r'^version = "([^"]+)"', (ROOT / name).read_text(), re.M)[1]
-    for name in ['web-app/package.json', 'installer/package.json', 'installer/src-tauri/tauri.conf.json']:
+    for name in ['web-app/package.json']:
         versions[name] = json.loads((ROOT / name).read_text())['version']
-    for name in ['web-app/package-lock.json', 'installer/package-lock.json']:
+    for name in ['web-app/package-lock.json']:
         lock = json.loads((ROOT / name).read_text())
         versions[name] = lock['version']
         versions[name + ' root package'] = lock['packages']['']['version']
@@ -41,7 +41,7 @@ def main():
             or path.name.startswith(('.env', 'back_parameter'))
             or path.name in {'dashboard-access.json', 'deployment-result.json', 'adb-lock-investigation.md',
                              'device_report.json', 'ubus_probe_report.json'}
-            or name.startswith(('scripts/emulat', 'scripts/test-emulator-', 'installer/assets/platform-tools/'))
+            or name.startswith(('scripts/emulat', 'scripts/test-emulator-'))
             or name == 'docs/EMULATION.md'):
             failures.append(name)
     assert not failures, 'Local-only artifacts in Git: ' + ', '.join(failures)

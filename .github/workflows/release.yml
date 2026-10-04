@@ -77,8 +77,34 @@ jobs:
           name: dashboard-dist
           path: dashboard-dist.tar.gz
 
+  component-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Build complete offline bundle
+        run: |
+          python3 -m venv /tmp/component-tools
+          /tmp/component-tools/bin/pip install ziglang==0.14.1
+          export ZIG="$(/tmp/component-tools/bin/python -c 'import pathlib,ziglang; print(pathlib.Path(ziglang.__file__).parent / "zig")')"
+          export PATH="$(dirname "$ZIG"):$PATH"
+          bash scripts/build-offline-bundle.sh build/release-bundle
+          tar czf openui-component-bundle.tar.gz -C build/release-bundle .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: component-bundle
+          path: openui-component-bundle.tar.gz
+
   publish:
-    needs: [agent, dashboard, checks]
+    needs: [agent, dashboard, component-bundle, checks]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -94,17 +120,9 @@ jobs:
           mkdir assets
           cp artifacts/zte-agent/zte-agent assets/zte-agent
           cp artifacts/dashboard-dist/dashboard-dist.tar.gz assets/
-          python3 - <<'PYTHON'
-          import os
-          import zipfile
-          from pathlib import Path
-          images = sorted((Path('docs/images') / ('installer-' + os.environ['GITHUB_REF_NAME'])).glob('*.png'))
-          assert len(images) == 5, 'Installer wireframes are incomplete'
-          with zipfile.ZipFile('assets/installer-wireframes.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
-              for image in images: archive.write(image, image.name)
-          PYTHON
+          cp artifacts/component-bundle/openui-component-bundle.tar.gz assets/
           cd assets
-          sha256sum zte-agent dashboard-dist.tar.gz installer-wireframes.zip > sha256sums.txt
+          sha256sum zte-agent dashboard-dist.tar.gz openui-component-bundle.tar.gz > sha256sums.txt
           cat sha256sums.txt
 
       - name: Release notes
@@ -121,7 +139,7 @@ jobs:
           - `zte-agent` — agent binary (aarch64 musl). Deploy to `/data/zte-agent`,
             or run `bash setup.sh` and choose the pre-built download.
           - `dashboard-dist.tar.gz` — dashboard static build consumed by the
-            native installer. For terminal deployment, run `scripts/zharden.sh`
+            OpenUI client component bundle. For terminal deployment, run `scripts/zharden.sh`
             once to install the isolated dashboard server, then use
             `deploy-dashboard.sh`; do not add a second ZTE uhttpd UCI instance.
           - `sha256sums.txt` — SHA-256 checksums.

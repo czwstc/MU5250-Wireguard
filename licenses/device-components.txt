@@ -1,0 +1,20 @@
+Device components distributed in the offline bundle
+
+wg: wireguard-tools 1.0.20210914-2 from OpenWrt 23.05.5 aarch64_generic; GPL-2.0.
+License: wireguard-tools-GPL-2.0.txt
+Source: https://git.zx2c4.com/wireguard-tools/
+OpenWrt build recipe: https://github.com/openwrt/openwrt/tree/openwrt-23.05/package/network/utils/wireguard-tools
+
+Dropbear: bundled pinned OpenWrt package; MIT and third-party terms.
+License: dropbear-LICENSE.txt
+Source: https://github.com/mkj/dropbear
+
+uhttpd: bundled pinned OpenWrt package; GPL-2.0.
+License text: wireguard-tools-GPL-2.0.txt (GNU GPL version 2)
+Copyright (C) 2010-2013 Jo-Philipp Wich, Felix Fietkau.
+Source: https://git.openwrt.org/project/uhttpd.git
+OpenWrt recipes and linked library licenses remain applicable to the binary packages.
+
+Agent and Web: root LICENSE, NOTICE and licenses/MU5250-OpenUI.txt.
+DevUI and renderer dependencies: screen-LICENSE, screen-NOTICE, screen-THIRD-PARTY-LICENSES.
+These texts describe component licenses, not a change to their licenses.

@@ -6,18 +6,19 @@ dashboard + SSH), and to keep it there. Read [SAFETY.md](SAFETY.md) first.
 For the shell flow, install Python 3, openssl and adb. Building the agent from
 source additionally needs the Rust cross-compilation toolchain described
 below. Building the dashboard requires Node.js `^20.19.0 || >=22.12.0` and
-npm; Node 18 is not supported by the locked Vite version. The native Tauri
-installer downloads prebuilt assets and end users need neither Rust nor Node.js.
+npm; Node 18 is not supported by the locked Vite version.
 
-## Native Windows/macOS installer
+## Native macOS client
 
-For a terminal-free installation, download **Open U60 Pro Installer** from the
-project's GitHub Releases. The Windows `.msi`/setup `.exe` and macOS `.dmg`
-builds bundle ADB and guide the user through detection, unlock, installation,
-repair, or update. The app filters unrelated ADB devices, prompts when multiple
-MU5250 modems are present, and invalidates its plan when the modem address
-changes. See [`../installer/README.md`](../installer/README.md) for the complete
-behavior, source-build instructions, diagnostics, and signing notes.
+The installer has moved to the independent **MU5250-OpenUIClient** project.
+Its SwiftUI/AppKit app manages the device and provides installation, repair,
+update and recovery through the extracted Rust installation core. End users
+need no Rust, Node.js or separately installed ADB. The app accepts this fork's
+complete format-v2 offline component bundle, generated with
+`scripts/build-offline-bundle.sh`. It targets macOS 15+ (Apple Silicon and Intel).
+Windows desktop installation is no longer maintained in this repository;
+terminal deployment remains available. Historical release documentation
+continues to describe the former Tauri installer.
 
 ## The whole flow at a glance
 

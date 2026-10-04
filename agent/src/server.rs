@@ -340,6 +340,7 @@ pub fn route(
         (&Method::Put, "/api/data-usage/reset-day") => {
             handlers::data_usage_reset_day_set(state, body)
         }
+        (&Method::Get, "/api/modem/qos") => crate::qos::get(state),
         (&Method::Get, "/api/modem/capabilities") => cell::modem_capabilities(state),
         (&Method::Put, "/api/modem/network-mode") => cell::modem_network_mode_set(state, body),
         // SMS

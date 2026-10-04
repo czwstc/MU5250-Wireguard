@@ -41,34 +41,3 @@ jobs:
           for script in setup.sh deploy.sh deploy-dashboard.sh scripts/zharden.sh scripts/build-offline-bundle.sh scripts/device/*.sh; do
             bash -n "$script"
           done
-  native-installer:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-15-intel, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: '. -> target'
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: installer/package-lock.json
-      - run: npm ci && npm run build && npm test
-        working-directory: installer
-      - name: Fetch native installer resources
-        shell: bash
-        env:
-          PLATFORM_TOOLS: ${{ runner.os == 'macOS' && 'darwin' || 'windows' }}
-        run: |
-          python scripts/prepare-installer-tools.py "$PLATFORM_TOOLS"
-      - run: cargo test -p mu5250-installer -p process-runner --locked
-      - run: cargo clippy -p mu5250-installer -p process-runner --all-targets --locked -- -D warnings

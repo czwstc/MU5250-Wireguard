@@ -1,3 +1,5 @@
+> Historical Tauri wireframe record. The active macOS installer is maintained in MU5250-OpenUIClient; paths and commands below describe the retired implementation.
+
 # v2.4 installer wireframes
 
 These publishable wireframes show the actual installer interface with a grayscale
@@ -29,5 +31,5 @@ The confirmation appears after native backup preparation and validation.
 ![Pending recovery with an action to restore the previous installation](images/installer-v2.4/05-recovery.png)
 
 The images can be regenerated using the instructions in
-[the installer README](../installer/README.md). The sample bridge is separate
+the former installer README (removed after migration to MU5250-OpenUIClient). The sample bridge is separate
 from the production desktop build and cannot perform device operations.

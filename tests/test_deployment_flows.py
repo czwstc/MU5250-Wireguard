@@ -38,22 +38,6 @@ class DeploymentFlowTests(unittest.TestCase):
         setup = (ROOT / 'setup.sh').read_text()
         self.assertLess(setup.index('"${PREPARE[@]}"'), setup.index('python3 scripts/zunlock.py'))
 
-    def test_tauri_installer_preserves_deployment_guards(self):
-        deploy = (ROOT / "installer" / "src-tauri" / "src" / "deploy.rs").read_text()
-        app = (ROOT / "installer" / "src" / "App.tsx").read_text()
-        production_deploy = deploy.split("#[cfg(test)]", maxsplit=1)[0]
-
-        self.assertIn("__MU5250_RC__", deploy)
-        self.assertIn("[ -f /data/bin/dropbear ] && [ -x /data/bin/dropbear ]", deploy)
-        self.assertIn("192.168.0.1:9090/api/auth/login", deploy)
-        self.assertNotIn("adb forward", production_deploy)
-        self.assertIn("/data/bin/dashboard-uhttpd", deploy)
-        self.assertIn("start_dashboard.sh", deploy)
-        self.assertIn("uci -q delete uhttpd.dashboard", deploy)
-        self.assertIn("agentPasswordConfirmation", app)
-        self.assertIn("invalidate_detection", app)
-        self.assertNotIn("Cancel", app)
-
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")
     def test_node_version_matrix_matches_package_engine(self):
         checker = ROOT / "web-app" / "tools" / "check-node-version.mjs"
@@ -77,10 +61,8 @@ class DeploymentFlowTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, supported)
 
         dashboard_package = json.loads((ROOT / "web-app" / "package.json").read_text())
-        installer_package = json.loads((ROOT / "installer" / "package.json").read_text())
         expected_engine = "^20.19.0 || >=22.12.0"
         self.assertEqual(dashboard_package["engines"]["node"], expected_engine)
-        self.assertEqual(installer_package["engines"]["node"], expected_engine)
 
 
 if __name__ == "__main__":

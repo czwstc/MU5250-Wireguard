@@ -465,6 +465,7 @@ STATE["screen_settings"] = {"revision": 1, "shortcut_enabled": False, "brightnes
 STATE["screen"] = {"available": True, "verified": True, "running": False, "state": "idle", "settings_revision": 1, "shortcut": {"available": True, "message": "Shortcut disabled"}}
 
 ROUTES_GET = {
+    "/api/modem/qos": lambda: {"status":"available", "sampled_at":int(time.time()), "source":"synthetic-demo", "stale":False, "error":None, "bearers":[{"id":"wwaniface1", "cid":1, "qci":6, "five_qi":None, "default_data":True, "connected":True, "technology":"SA", "apn":None, "interface":"rmnet_data0"}]},
     "/api/wireguard": lambda: STATE["wireguard"],
     "/api/screen": lambda: STATE["screen"],
     "/api/screen/settings": lambda: STATE["screen_settings"],
