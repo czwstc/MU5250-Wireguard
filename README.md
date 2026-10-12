@@ -1,5 +1,7 @@
 # MU5250-OpenUI-Wireguard
 
+**English** | [简体中文](README.zh-CN.md)
+
 **OpenUI with WireGuard for the ZTE U60 Pro (MU5250).**
 
 **Author: ZweiChen**
@@ -13,6 +15,12 @@ Rust agent and deployment workflow. WireGuard has its own **left sidebar entry, 
 | --- | --- |
 | OpenUI dashboard | `http://192.168.0.1:8080/` |
 | Authenticated OpenUI API | `http://192.168.0.1:9090/` |
+
+**Jump to:** [Device](#device) · [DevUI quick start](#devui-quick-start) · [Screenshots](#screenshots) ·
+[WireGuard features](#wireguard-features) · [Routing behavior](#routing-behavior) ·
+**[Installation](#installation)** · [Local demo and checks](#local-demo-and-checks) ·
+[Verification record](#verification-record) · [Documentation](#documentation) ·
+[Acknowledgements](#acknowledgements) · [Copyright and licenses](#copyright-and-licenses)
 
 ## Device
 
@@ -30,8 +38,11 @@ establish compatibility with other models, hardware revisions or firmware.
 
 ## DevUI quick start
 
+Available after the screen component is installed and
+[verified](#verify-and-enable-the-devui-screen).
+
 1. Open **DevUI** in the OpenUI sidebar and select **Open DevUI screen**.
-2. Short-press the power button to sleep or wake the display.
+2. Short-press the power button to sleep or wake the display; touch is ignored while it is dark.
 3. To enter from stock UI, enable **Press four times to open DevUI** and save.
    Make four short presses within 2.5 seconds, with gaps no longer than 0.7 seconds.
 4. Set brightness, idle return (30–600 seconds), startup page and visible menu
@@ -108,11 +119,196 @@ traffic to fall back to WAN. Turning WireGuard off intentionally restores normal
 routing. Boot and stock-firewall reload intervals are **not** guaranteed to retain
 this blocking policy. See [WireGuard behavior and recovery](docs/WIREGUARD.md).
 
-## Build from this repository
+## Installation
 
-Requires Rust with the `aarch64-unknown-linux-musl` target, `cargo-zigbuild`,
-Zig 0.14.1, Python 3, and Node.js `^20.19.0 || >=22.12.0` with npm.
-Install/configure these development tools before running:
+Installation puts the OpenUI agent, dashboard, `wg`, the DevUI screen program and
+key-only SSH onto the modem's `/data` partition and adds startup lines to
+`/etc/rc.local`. No prebuilt download is published yet, so you first build one
+**complete offline bundle** from this repository on your computer; building never
+contacts your modem. You then install that bundle with the native macOS client or
+from the terminal. The whole flow:
+
+1. Read [Before you start](#before-you-start) and [choose a path](#choose-an-installation-path).
+2. [Prepare your computer](#prepare-your-computer) and
+   [build the bundle](#build-from-this-repository).
+3. Install with the [native macOS client](#install-with-the-native-macos-client) or
+   [from the terminal](#install-from-the-terminal).
+4. [Verify and enable the DevUI screen](#verify-and-enable-the-devui-screen).
+5. [First use](#first-use), and keep [Update, roll back and recover](#update-roll-back-and-recover)
+   at hand.
+
+### Before you start
+
+- **Target device.** Only the ZTE U60 Pro (MU5250), hardware `MU5250_HW1.0`, firmware
+  `CN_ZTE_MU5250V1.0.0B31` (see [Device](#device)) has been verified. The terminal tools
+  check that the modem identifies itself as an MU5250/U60 Pro and reports a firmware
+  version, but they do **not** reject other firmware builds. Do not install on any other
+  model, hardware revision or firmware.
+- **Read [docs/SAFETY.md](docs/SAFETY.md).** The installer writes only under `/data` and `/etc`,
+  does not touch partitions, and adds no boot hook other than fixed lines in `/etc/rc.local`.
+  Unlocking a locked modem uses the firmware's own configuration backup/restore.
+- **Power and connection.** Charge the modem and keep it powered. An unlock restarts it
+  (about 90 seconds offline). Do not unplug it, close the terminal or quit the client
+  while an installer runs: the recovery snapshot cannot protect against power loss or a
+  forced kill. For a first-time install on a locked modem, connect over **Wi-Fi**; the
+  temporary USB-debug mode used during unlock has no USB networking.
+- **Verification status.** Upgrading an existing OpenUI installation to this fork was
+  exercised on the B31 test device (see [Verification record](#verification-record)). A
+  factory-new unlock plus complete installation of this fork's bundle has not been re-run
+  end to end on real hardware, and live VPN egress has not been tested. Use the dry runs
+  below and keep the recovery information.
+- **Do not mix in upstream installers.** Upstream OpenUI installer packages and releases contain
+  neither WireGuard nor DevUI and can overwrite them. Use only this repository's bundle, or the
+  native client with it.
+- **Plain HTTP on the LAN.** The dashboard and API are unencrypted. Do not expose ports
+  `8080`, `9090` or `2222` to the internet.
+
+Credentials involved:
+
+| Credential | Used for | Notes |
+| --- | --- | --- |
+| Router admin password | Stock web UI at `http://192.168.0.1`; only to unlock a locked modem | The one you already use for the stock UI |
+| Backup-key suffix | Only to unlock a locked modem | Not published in this repository; see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-backup-key-suffix) |
+| OpenUI password (agent password) | Dashboard and API login | You choose it during installation. Different from the router admin password |
+| Optional six-digit PIN | Mobile-browser dashboard login | Set with the `ZTE_AGENT_PIN` environment variable; leave unset for none |
+
+What an installation changes on the modem:
+
+| Item | Location |
+| --- | --- |
+| Agent | `/data/zte-agent`, started at boot by `/data/local/tmp/start_zte_agent.sh` |
+| Dashboard files | `/data/open-u60-dashboards/<id>/`, selected by `/data/www.current`; served on port 8080 by the isolated `/data/bin/dashboard-uhttpd` |
+| SSH (key-only) | Dropbear in `/data/bin`, port `2222`; host keys in `/etc/dropbear` with copies in `/data/dropbear` |
+| WireGuard tool and DevUI program | `/data/bin/wg` and `/data/bin/openui-screen` (licenses in `/data/local/tmp/openui-screen-licenses`) |
+| Boot entries | Fixed `sh /data/local/tmp/start_*.sh` lines in `/etc/rc.local`; the temporary USB-debug line is removed |
+| Recovery snapshots | `/data/local/tmp/open-u60-transactions/<id>`; install manifest `/data/open-u60-manifest.json` |
+| Firmware auto-update | Turned off (`zwrt_zte_dm`) |
+
+The stock web UI on ports 80/443 stays untouched.
+
+### Choose an installation path
+
+| Your modem | What to do |
+| --- | --- |
+| Stock firmware, never unlocked: no SSH on port 2222 and `adb devices` is empty | First-time install **with unlock**: [terminal Steps 1–4](#install-from-the-terminal) or the native client |
+| ADB already works (`adb devices` lists it) but OpenUI is not installed | First-time install; `setup.sh` detects ADB and skips the unlock |
+| Upstream OpenUI (or an older build of this fork) is installed and SSH on port 2222 works | **Upgrade in place**: skip Step 2 and use the upgrade command in Step 3 |
+
+Probe the modem from your computer:
+
+```sh
+mkdir -p "$HOME/.ssh/known_hosts.d"
+ssh -p 2222 -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile="$HOME/.ssh/known_hosts.d/zte" root@192.168.0.1 true && echo "SSH ready"
+adb devices
+```
+
+The installer tools record the modem's SSH host key in that same `known_hosts.d/zte` file.
+`Permission denied (publickey)` still means OpenUI's key-only SSH is present, and your key
+simply is not the one authorised on it. `Connection refused` or a timeout means no SSH.
+
+Two ways to run the install:
+
+| | Native macOS client | Terminal |
+| --- | --- | --- |
+| Computer | macOS 15+ (Apple Silicon or Intel) | macOS or Linux |
+| Interface | SwiftUI app, Chinese interface | Scripts in this repository |
+| Extra build | The client app itself, from [MU5250-OpenUIClient](https://github.com/czwstc/MU5250-OpenUIClient) | None beyond the bundle |
+| Unlock and recovery | Built into the app | `setup.sh`, and the recovery command the installer prints |
+
+### Prepare your computer
+
+Use macOS or Linux and connect to the modem's Wi-Fi (or USB-C tethering) so that
+`192.168.0.1` is reachable. Windows is not covered: the former Windows installer was retired.
+Building the bundle needs internet access; installing it only talks to the modem.
+
+To install from the terminal you need:
+
+- Python 3.9 or newer, `ssh` and `curl`;
+- `adb` and `openssl` for the first-time install and unlock.
+
+To build the bundle (once) you also need:
+
+- git, and Rust through [rustup](https://rustup.rs) with the `aarch64-unknown-linux-musl` target;
+- `cargo-zigbuild` and **Zig 0.14.1**;
+- Node.js `^20.19.0 || >=22.12.0` with npm (Node 18 is not supported);
+- network access to crates.io, the npm registry, PyPI (for Zig), `downloads.openwrt.org`,
+  `github.com` and `unifoundry.com`. Every download is checked against a pinned SHA-256.
+
+On macOS with [Homebrew](https://brew.sh) (`ssh`, `curl` and `openssl` ship with macOS):
+
+```sh
+brew install git node python android-platform-tools
+# Install Rust from https://rustup.rs, then:
+rustup target add aarch64-unknown-linux-musl
+cargo install --locked cargo-zigbuild
+```
+
+On Debian/Ubuntu: `sudo apt-get install -y git curl openssl openssh-client python3 python3-venv android-tools-adb`,
+then Rust as above. Distribution Node.js packages are often older than required; install Node.js 22 LTS
+from [nodejs.org](https://nodejs.org) or a version manager.
+
+Get exactly Zig 0.14.1 in a throwaway virtual environment inside your clone (it is git-ignored),
+the same way this repository's CI does:
+
+```sh
+git clone https://github.com/czwstc/MU5250-Wireguard.git
+cd MU5250-Wireguard
+python3 -m venv .venv-zig
+.venv-zig/bin/pip install ziglang==0.14.1
+export ZIG="$(.venv-zig/bin/python -c 'import pathlib,ziglang; print(pathlib.Path(ziglang.__file__).parent / "zig")')"
+export PATH="$(dirname "$ZIG"):$PATH"
+```
+
+The two `export` lines only last for the current terminal; repeat them in a new one. Check the tools:
+
+```sh
+python3 --version && node --version && rustc --version && cargo zigbuild --version && "$ZIG" version
+```
+
+`"$ZIG" version` must print `0.14.1`.
+
+### Build from this repository
+
+Run from the repository root with the Zig variables above exported. This step does not
+contact or change your modem.
+
+```sh
+bash scripts/build-offline-bundle.sh
+```
+
+It cross-compiles the agent, builds the dashboard, extracts `wg` from a checksum-pinned official
+OpenWrt package, builds the DevUI screen program (fetching checksum-pinned litehtml, FreeType and
+GNU Unifont), fetches the pinned Dropbear and uhttpd packages, and writes a format-v2 bundle to
+`dist/install-bundle/`. The first build takes several minutes. The script refuses to overwrite an
+existing directory; pass a different **absolute** path as its only argument to build elsewhere.
+
+| File in the bundle | Content |
+| --- | --- |
+| `zte-agent` | aarch64 agent |
+| `dashboard-dist.tar.gz` | Built dashboard, with `LICENSE`, `NOTICE` and `licenses/` |
+| `wg` | WireGuard command-line tool |
+| `openui-screen` | DevUI screen program (GPL-3.0-or-later), with `screen-LICENSE`, `screen-NOTICE`, `screen-THIRD-PARTY-LICENSES` |
+| `dropbear.ipk`, `uhttpd.ipk` | Pinned SSH server and isolated dashboard web server |
+| `sha256sums.txt`, `bundle.json` | Per-file SHA-256 sums; target device declaration and release version |
+
+Verify the result (use `sha256sum -c` on Linux):
+
+```sh
+(cd dist/install-bundle && shasum -a 256 -c sha256sums.txt)
+```
+
+If a release is published later, its `openui-component-bundle.tar.gz` is the same bundle:
+verify it against the release's `sha256sums.txt`, extract it into an empty directory and use that
+directory instead of `dist/install-bundle`. The release's separate `zte-agent` and
+`dashboard-dist.tar.gz` assets are for shell workflows only; they do not include `wg` or the
+DevUI screen program.
+
+<details>
+<summary>Build the components individually</summary>
+
+Requires the same tools. Outputs: `target/aarch64-unknown-linux-musl/release/zte-agent`,
+`build/dashboard-dist.tar.gz`, `build/wireguard/wg` and `build/screen/openui-screen`.
 
 ```sh
 cargo zigbuild --locked --release -p zte-agent --target aarch64-unknown-linux-musl
@@ -128,49 +324,236 @@ ZIG=/path/to/zig sh screen/build.sh
 
 The `wg` preparer downloads a checksum-pinned official OpenWrt package and
 extracts only the CLI. The screen build fetches checksum-pinned litehtml, FreeType and GNU Unifont.
-Neither command contacts or changes your modem.
+Neither command contacts or changes your modem. Use these paths in place of the bundle files in the
+commands below.
 
-### Update an existing OpenUI installation
+</details>
 
-Use your existing root SSH access and this repository's locally built components.
-This updates OpenUI itself; it does not start a separate management application.
+### Install with the native macOS client
+
+The desktop installer lives in the independent
+[MU5250-OpenUIClient](https://github.com/czwstc/MU5250-OpenUIClient) project (SwiftUI/AppKit, macOS 15+,
+Apple Silicon and Intel, Chinese interface). It detects the modem, runs a pre-flight check, installs
+through the same snapshot and rollback transaction as the terminal tools, and can recover an
+interrupted installation. It needs no Rust, Node.js or separately installed ADB when running.
+
+1. Build the app from that repository (`bash scripts/build-macos.sh arm64`, or `x86_64` for Intel;
+   see its README). No notarized download is published: the build is locally signed, and online
+   updates are disabled.
+2. Connect to the modem and open the app. Allow macOS **Local Network** access when asked.
+3. Open **Maintenance → Install and maintenance** (维护 → 安装与维护) and choose the **extracted bundle
+   directory** (`dist/install-bundle`). The client accepts only complete format-v2 local directories;
+   upstream or legacy bundles without WireGuard and DevUI are rejected.
+4. Set the OpenUI password and the PIN choice. On an existing installation you can keep the current
+   credentials.
+5. Run the pre-check, then install, update or repair. For a locked modem the client asks for the router
+   admin password and backup-key suffix, prepares and validates a backup, and asks you to confirm before
+   the restore and reboot.
+6. Run the [screen verification](#verify-and-enable-the-devui-screen) afterwards. The client uses its own
+   SSH identity, `~/Library/Application Support/open-u60-pro/ssh/id_ed25519`; pass that path as
+   `--ssh-key`.
+
+The app has been validated on the B31 test device for an upgrade of an existing OpenUI installation;
+a factory-new install through it has not been run. If it reports that local network access is
+prohibited after a rebuild, toggle the app's switch off and on under System Settings → Privacy &
+Security → Local Network, then restart it. Details: the client's README.
+
+### Install from the terminal
+
+Run everything from the repository root, with the bundle built above in `dist/install-bundle`. Type
+passwords at the hidden prompts; do not pass them as command-line arguments (other local users can see
+those) and never put them in a committed file. The `ssh` examples use your default SSH identity
+(`~/.ssh/id_ed25519`); add `-i <key>` if the modem authorises a different key.
+
+#### Step 1: Check the modem state
+
+Use the probe in [Choose an installation path](#choose-an-installation-path) to decide whether you need
+Step 2 (first-time install) or can go straight to Step 3 (upgrade in place).
+
+#### Step 2: First-time install with setup.sh
+
+Rehearse first. With a locked modem this stops after preparing and checking the unlock backup; with an
+unlocked one it checks identity and storage. Nothing is written to the modem, and the questions are the
+same as in the real run described below:
+
+```sh
+ZTE_DRY_RUN=1 ZTE_BUNDLE_PATH="$PWD/dist/install-bundle" bash setup.sh
+```
+
+Then run it for real. Add `ZTE_AGENT_PIN=<six digits>` only if you want a mobile PIN, and
+`ZTE_GATEWAY=<address>` if the modem's LAN address is not `192.168.0.1`:
+
+```sh
+ZTE_BUNDLE_PATH="$PWD/dist/install-bundle" bash setup.sh
+```
+
+What you will be asked, and what happens:
+
+1. **Router admin password** and **Agent API password** (hidden). The agent password becomes your OpenUI
+   login. The router password is only used to unlock, but the prompt requires a non-empty value.
+2. **How would you like to get the zte-agent binary?** Enter **`1`**. Because `ZTE_BUNDLE_PATH` is set,
+   this reads the agent and the SSH and web-server packages from your local bundle, verifies their
+   checksums and downloads nothing. Do **not** choose `1` without `ZTE_BUNDLE_PATH`: the script would then
+   fetch the agent release of the upstream MU5250-OpenUI project, which has no WireGuard or DevUI.
+   Option `2` builds the agent from source with `aarch64-linux-musl-gcc`
+   (on macOS `brew install filosottile/musl-cross/musl-cross`, which is slow); it is unnecessary
+   because the bundle was already built from this source.
+3. Missing host tools are listed and installed only after you confirm.
+4. If neither SSH nor ADB is reachable, the script treats the modem as locked. You enter the
+   **backup-key suffix** (hidden); it runs a dry run of `scripts/zunlock.py`, then the real unlock, which
+   asks for confirmation before uploading. The modem restores and **reboots** (60–90 seconds); the script
+   waits up to three minutes for ADB.
+5. The agent is installed, key-only SSH is configured and verified, the isolated dashboard server is set
+   up, firmware auto-update is turned off, and the temporary USB-debug boot line is removed. Any failure
+   restores the snapshot taken before the changes.
+6. It ends with `Agent and key-only SSH verified.`
+
+SSH keys: the installer authorises `~/.ssh/id_ed25519` on the modem. If you do not have that key it
+creates one **with an empty passphrase**; protect it, or generate your own beforehand.
+
+#### Step 3: Install the dashboard, WireGuard tools and DevUI
+
+Use the SSH key from Step 2 (`~/.ssh/id_ed25519` unless you used your own). Rehearse first with
+`--dry-run`, review the result, then run the same command without it.
+
+After a first-time install, the agent is already in place:
 
 ```sh
 python3 scripts/deploy-components.py \
   --gateway 192.168.0.1 \
-  --ssh-key '/path/to/id_ed25519' \
-  --agent target/aarch64-unknown-linux-musl/release/zte-agent \
-  --dashboard build/dashboard-dist.tar.gz \
-  --wireguard-tools build/wireguard/wg \
-  --screen build/screen/openui-screen \
+  --ssh-key "$HOME/.ssh/id_ed25519" \
+  --dashboard dist/install-bundle/dashboard-dist.tar.gz \
+  --wireguard-tools dist/install-bundle/wg \
+  --screen dist/install-bundle/openui-screen \
   --dry-run
 ```
 
-Enter your **existing OpenUI agent password** when prompted. If you use a PIN,
-provide the existing `ZTE_AGENT_PIN` environment value as well: this script renders
-the startup credentials from these inputs, and an omitted PIN disables PIN login.
-Do not put credentials in a committed file. Review the dry-run result, then repeat
-without `--dry-run` to deploy through OpenUI's snapshot and rollback flow.
-Restore the stock screen before replacing the screen binary.
-
-After installation, run the supervised recovery verification before enabling the
-webpage's screen entry:
+To **upgrade an existing installation**, add the agent. This updates OpenUI itself; it does not start
+a separate management application. The agent is re-installed with the credentials you provide, so
+enter your **existing** agent password at the prompt and export your existing PIN first. An omitted
+PIN disables PIN login:
 
 ```sh
-python3 scripts/verify-screen.py --gateway 192.168.0.1 \
-  --port 2222 --ssh-key '/path/to/id_ed25519'
+printf 'Existing PIN (empty if none): '; read -rs ZTE_AGENT_PIN; echo; export ZTE_AGENT_PIN
+python3 scripts/deploy-components.py \
+  --gateway 192.168.0.1 \
+  --ssh-key '/path/to/the/key/used/for/the/original/install' \
+  --agent dist/install-bundle/zte-agent \
+  --dashboard dist/install-bundle/dashboard-dist.tar.gz \
+  --wireguard-tools dist/install-bundle/wg \
+  --screen dist/install-bundle/openui-screen \
+  --dry-run
 ```
 
-This verification temporarily takes over the physical display and tests normal,
-idle, crash and stalled-panel recovery. Short-press the power button to turn the
-DevUI backlight off or wake it; touch actions are ignored while dark. The existing
-configured idle return still applies (two minutes by default). Long presses remain with the factory handler. Details: [screen documentation](docs/SCREEN.md).
+A successful dry run prints `Dry run passed: identity, local artifacts and storage checked; no
+deployment writes.` A real run prints `Verified … (firmware)`, then
+`Recovery command for this device: …`, and ends with `Deployment verified. Recovery snapshot
+retained on the modem.` **Copy the recovery command somewhere safe** (see
+[Update, roll back and recover](#update-roll-back-and-recover)). Notes:
 
-The native macOS installer and management client have moved to the independent
-`MU5250-OpenUIClient` project. It uses SwiftUI/AppKit and installs this fork's
-complete format-v2 offline bundle, including WireGuard and DevUI. Generate one
-with `scripts/build-offline-bundle.sh`. Upstream installer packages do not contain
-these additions and can overwrite them. Terminal deployment remains available.
+- Restore the stock screen before replacing a running screen program: use **Restore stock UI** on the
+  DevUI page, or `ssh -p 2222 root@192.168.0.1 /data/bin/openui-screen --restore`.
+- If the dry run says the dashboard server is missing (older installations), run
+  `bash scripts/zharden.sh` once and repeat.
+- A pending, unfinished deployment blocks a new one until it is recovered.
+- For a single component, `./deploy-dashboard.sh` rebuilds and deploys only the dashboard (Node.js
+  needed), and `./deploy.sh` rebuilds and deploys only the agent (needs `aarch64-linux-musl-gcc`).
+  Both accept the same extra flags, such as `--dry-run` and `--ssh-key`.
+
+#### Step 4: Reboot once (first-time installs)
+
+After an unlock the modem is still in the temporary USB-debug mode. Reboot it from the dashboard
+(**System → Settings → Service controls → Reboot**) when you are ready: it returns to normal USB
+tethering, and the reboot confirms that the agent, dashboard (`:8080`) and SSH (`:2222`) start by
+themselves.
+
+### Verify and enable the DevUI screen
+
+Installing the screen program deliberately leaves it locked. Until it passes a supervised recovery
+check, the DevUI page shows *The screen component must be installed and pass device recovery
+verification before it can open.* and the four-press shortcut stays off. Run:
+
+```sh
+python3 scripts/verify-screen.py --gateway 192.168.0.1 --port 2222 \
+  --ssh-key "$HOME/.ssh/id_ed25519"
+```
+
+- It reads the existing agent login from the modem in memory and does not print it.
+- It temporarily takes over the physical display for a few minutes (including a two-minute idle test) and
+  checks backlight off/on, startup without touch, crash and stalled-panel recovery, web open/close and the
+  default 120-second idle return. Do not touch the screen or power button meanwhile. It does not change
+  WireGuard configuration or network rules.
+- Run it with the default 120-second idle setting, and with the four-press shortcut disabled if the test
+  is unattended.
+- On success the web entry and the shortcut become available. On failure it restores the stock UI and
+  removes the marker.
+- Repeat it after every screen-program update: a new binary invalidates the marker.
+
+More detail and the manual recovery path: [docs/SCREEN.md](docs/SCREEN.md).
+
+### First use
+
+1. On a device on the modem's network, open `http://192.168.0.1:8080/` and sign in with your OpenUI
+   password. A six-digit PIN works only from mobile browsers, and only if you set one.
+2. Open **WireGuard** in the sidebar (between Network and Modem). It is off after a new installation.
+   Import a single-peer IPv4 `.conf` under **Add client configuration**, give it a name, click
+   **Save new profile**, choose the devices, then enable the tunnel. A recent handshake does not prove
+   internet access. Read [WireGuard behavior and recovery](docs/WIREGUARD.md) first.
+3. Open **DevUI** to use the touchscreen menu (see [DevUI quick start](#devui-quick-start)).
+4. Optional checks over SSH:
+
+   ```sh
+   ssh -p 2222 -i "$HOME/.ssh/id_ed25519" root@192.168.0.1 \
+     'test -d /sys/module/wireguard && echo kernel-wireguard-present; /data/bin/wg --version'
+   ```
+
+### Update, roll back and recover
+
+- **Update.** Pull the new source, build the bundle into a new directory, then run Step 3's upgrade
+  command with `--dry-run` first. Keep your agent password and PIN, restore the stock screen first, and
+  re-run the screen verification afterwards. Update the agent and dashboard together.
+- **Roll back.** A failed deployment restores the snapshot automatically (`Previous installation
+  restored.`). If the connection was lost, reconnect to the same modem and run the printed recovery
+  command on it:
+
+  ```sh
+  ssh -p 2222 -i "$HOME/.ssh/id_ed25519" root@192.168.0.1 '<the printed recovery command>'
+  ```
+
+  It has the form `sh /data/local/tmp/open-u60-transaction.sh restore <id> <fingerprint>`. Successful
+  snapshots stay on the modem, so it can also return to the state before a deployment. A snapshot
+  covers the agent, dashboard pointer, startup scripts, SSH and web-server binaries, `rc.local`, `wg`
+  and the screen program; it does not include saved WireGuard profiles or DevUI settings. There is no
+  separate uninstaller. The native client can restore the snapshot of an interrupted installation from
+  its UI.
+- **Stuck screen or tunnel.** Restore the display with `ssh -p 2222 root@192.168.0.1 /data/bin/openui-screen --restore`.
+  Turn the tunnel off from the dashboard to restore normal routing; see
+  [docs/WIREGUARD.md](docs/WIREGUARD.md#ownership-and-recovery).
+- **After a firmware update.** The installer turns firmware auto-update off. A firmware update wipes the
+  `rc.local` lines, so services stop starting at boot while the modem itself still boots normally;
+  reinstall with the steps above. Confirm auto-update is still off with
+  `ssh -p 2222 root@192.168.0.1 'uci get zwrt_zte_dm.dm_update.dm_update_mode'` (it prints `0`).
+  Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- **Keep your files.** Original encrypted unlock backups stay in `~/.local/share/open-u60-pro/recovery`
+  for the terminal flow. Do not delete them, and do not commit credentials, backups, keys or `.conf` files.
+
+### Troubleshooting
+
+| Symptom or message | What to do |
+| --- | --- |
+| `Unsupported Node.js …; dashboard builds require ^20.19.0 \|\| >=22.12.0`, or the dashboard build fails on an old Node.js | Install Node.js 22 LTS (20.19+ also works), check `node --version`, rebuild. |
+| `Choose a new output directory; an existing bundle will not be overwritten.` | Remove or rename `dist/install-bundle`, or pass a new absolute path to the script. |
+| `… checksum mismatch` or `… package integrity check failed` | A pinned download changed or was corrupted (proxy, captive portal). Retry on a clean network; never bypass the check. |
+| `Expected a root shell on the aarch64 U60 Pro` or `Device identity or firmware could not be verified as a U60 Pro` | The connection did not reach the target modem as root. Check `--gateway`, `--ssh-key` and your network. |
+| `Multiple ADB devices connected; select one with --adb-serial` | Unplug other Android devices or pass `--adb-serial SERIAL`. |
+| `An unfinished deployment exists. Recover it before starting another installation.` | Run the saved recovery command on the modem, or use the client's recovery. |
+| `Insufficient storage for deployment and rollback` | Free space on the modem's `/data`. Old snapshots in `/data/local/tmp/open-u60-transactions/` use space; save any recovery data you need before removing them. |
+| `Permission denied (publickey)` on port 2222 | SSH is installed but your key is not authorised. Use the key from the original install (`-i` or `--ssh-key`). |
+| `REMOTE HOST IDENTIFICATION HAS CHANGED` | The modem's SSH host keys were regenerated (for example by a factory reset). If you are sure it is your modem: `ssh-keygen -R '[192.168.0.1]:2222' -f ~/.ssh/known_hosts.d/zte`. |
+| Dashboard does not load on port 8080 | `ssh -p 2222 root@192.168.0.1 'sh /data/local/tmp/start_dashboard.sh; cat /tmp/dashboard-uhttpd.log; /usr/bin/curl -v http://127.0.0.1:8080/'` |
+| DevUI page: *The screen component must be installed and pass device recovery verification before it can open.* | Run [the screen verification](#verify-and-enable-the-devui-screen). |
+| WireGuard page: `Kernel WireGuard or /data/bin/wg is unavailable` | Check `/data/bin/wg --version` and that `/sys/module/wireguard` exists. Without kernel WireGuard the tunnel cannot run on that firmware. |
+| Services gone after a firmware update | Reinstall; see [Update, roll back and recover](#update-roll-back-and-recover). |
 
 ## Local demo and checks
 
@@ -203,6 +586,8 @@ cd ..
 sh screen/build.sh --preview
 ```
 
+## Verification record
+
 The agent, dashboard and DevUI screen were deployed to the target B31 device on
 2026-09-14. Checks verified matching artifact hashes, unchanged login settings,
 saved profiles and device routing. The real-device screen tests passed short
@@ -220,7 +605,16 @@ idle return and the default 120-second recovery path passed. The device owner
 confirmed that **four short power-button presses open DevUI and the first frame
 appears immediately without touching the screen**. The shortcut is enabled on
 the test device; new installations still default to disabled. Project documentation
-is in English.
+is in English, with a Chinese README in [README.zh-CN.md](README.zh-CN.md).
+
+## Documentation
+
+- [Deployment: unlock, install, update](docs/DEPLOYMENT.md) and [Safety rules](docs/SAFETY.md)
+- [WireGuard behavior and recovery](docs/WIREGUARD.md) and [DevUI screen](docs/SCREEN.md)
+- [Dashboard](docs/DASHBOARD.md), [Agent and API](docs/AGENT.md) and [QoS API](docs/API-QOS.md)
+  (authenticated real bearer data used by the native client)
+- Native macOS installer and management client:
+  [MU5250-OpenUIClient](https://github.com/czwstc/MU5250-OpenUIClient)
 
 ## Acknowledgements
 
@@ -258,7 +652,5 @@ See [NOTICE](NOTICE), [screen notices](screen/NOTICE) and [preserved upstream
 licenses](licenses/). The root MIT license does not relicense GPL screen code or
 third-party fonts. Distributing the GPL screen executable requires its corresponding
 source and applicable notices; the screen source and build scripts are provided here.
-
-### Native macOS client and complete component bundles
-
-The desktop installer now lives in the independent MU5250-OpenUIClient project (SwiftUI/AppKit, macOS 15+). Build complete local component directories with `scripts/build-offline-bundle.sh`; format-v2 includes Agent, dashboard, wg, supervised DevUI, pinned server dependencies, licenses and per-file SHA-256. Legacy two-component release assets remain available for shell workflows. The release workflow also builds a complete bundle archive; the client currently accepts local directories and has online updates disabled. See [QoS API](docs/API-QOS.md) for authenticated real bearer data.
+The complete bundle includes Agent, dashboard, `wg`, the supervised DevUI program, pinned server
+dependencies, licenses and per-file SHA-256 sums.
