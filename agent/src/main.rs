@@ -10,6 +10,7 @@ mod device_ext;
 mod event_bus;
 mod handlers;
 mod lan;
+mod lan_policy;
 mod logging;
 mod network_ext;
 mod process;
@@ -21,6 +22,7 @@ mod screen_shortcut;
 mod server;
 mod signal_logger;
 mod sim;
+mod singbox;
 mod sms;
 mod storage;
 mod system;
@@ -80,6 +82,7 @@ fn main() {
         .bounded_output();
 
     wireguard::start();
+    singbox::start();
     screen::start(state.clone());
 
     usb::enforce_usb_mode_on_boot();

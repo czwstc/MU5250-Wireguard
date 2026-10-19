@@ -100,18 +100,18 @@ class Transport:
                             '-o', 'StrictHostKeyChecking=accept-new', '-o', f'UserKnownHostsFile={known}', f'root@{gateway}']
             if ssh_key: self.command[1:1] = ['-i', str(Path(ssh_key).expanduser()), '-o', 'IdentitiesOnly=yes']
 
-    def shell(self, command, data=None):
+    def shell(self, command, data=None, timeout=60):
         if self.serial and data is not None:
             # Legacy adbd cannot signal stdin EOF reliably. Transfer input via
             # the sync protocol, then let the device shell read a regular file.
             source = '/data/local/tmp/open-u60-input-' + uuid.uuid4().hex
             self.push(data, source)
             try:
-                return self.shell(f'({command}) < {q(source)}')
+                return self.shell(f'({command}) < {q(source)}', timeout=timeout)
             finally:
                 self.shell(f'rm -f {q(source)}')
         marker = '__U60_RESULT__'
-        output = run([*self.command, f"({command}); code=$?; printf '\\n{marker}%s\\n' \"$code\""], data)
+        output = run([*self.command, f"({command}); code=$?; printf '\\n{marker}%s\\n' \"$code\""], data, timeout)
         body, separator, status = output.rpartition(marker)
         if not separator or status.strip() != '0':
             raise RuntimeError('The modem rejected a deployment operation')
@@ -119,13 +119,15 @@ class Transport:
 
     def push(self, data, destination, executable=False):
         staged = destination + '.new'
+        # Large binaries need longer than control commands; assume at least 512 KiB/s.
+        timeout = 60 + len(data) // (512 * 1024)
         if self.serial:
             with tempfile.NamedTemporaryFile(prefix='open-u60-transfer-') as source:
                 source.write(data)
                 source.flush()
-                run(['adb', '-s', self.serial, 'push', source.name, staged])
+                run(['adb', '-s', self.serial, 'push', source.name, staged], timeout=timeout)
         else:
-            self.shell(f'umask 077; cat > {q(staged)}', data)
+            self.shell(f'umask 077; cat > {q(staged)}', data, timeout)
         checksum = hashlib.sha256(data).hexdigest()
         self.shell(f"set -e; test \"$(sha256sum {q(staged)} | awk '{{print $1}}')\" = {checksum}; "
                    f"chmod {'700' if executable else '600'} {q(staged)}; mv -f {q(staged)} {q(destination)}")
@@ -172,9 +174,9 @@ class LimitedReader:
         return data
 
 
-def read_limited(path):
+def read_limited(path, limit=64 * 1024 * 1024):
     with Path(path).open('rb') as file:
-        return LimitedReader(file, 64 * 1024 * 1024).read()
+        return LimitedReader(file, limit).read()
 
 
 def validate_dashboard(path):
@@ -287,7 +289,8 @@ def prepare_only(args):
 
 def deploy(args):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', args.gateway): raise ValueError('Invalid gateway')
-    if not any((args.agent, args.dashboard, args.harden, getattr(args, 'screen', None), getattr(args, 'wireguard_tools', None))):
+    if not any((args.agent, args.dashboard, args.harden, getattr(args, 'screen', None), getattr(args, 'wireguard_tools', None),
+                getattr(args, 'singbox_binary', None))):
         raise ValueError('Select at least one component')
     # Finish all local preparation before contacting or mutating a device.
     prepared = {}
@@ -314,6 +317,12 @@ def deploy(args):
         if len(wg) < 64 or wg[:6] != b'\x7fELF\x02\x01' or int.from_bytes(wg[18:20], 'little') != 183:
             raise ValueError('WireGuard tool must be an aarch64 ELF64 executable')
         programs['wg'] = wg
+    if getattr(args, 'singbox_binary', None):
+        # The official static build is larger than the other components.
+        singbox = read_limited(args.singbox_binary, 128 * 1024 * 1024)
+        if len(singbox) < 64 or singbox[:6] != b'\x7fELF\x02\x01' or int.from_bytes(singbox[18:20], 'little') != 183:
+            raise ValueError('sing-box must be an aarch64 ELF64 executable')
+        programs['sing-box'] = singbox
     if getattr(args, 'screen', None):
         panel = read_limited(args.screen)
         if len(panel) < 64 or panel[:6] != b'\x7fELF\x02\x01' or int.from_bytes(panel[18:20], 'little') != 183:
@@ -361,6 +370,12 @@ def deploy(args):
             transport.shell('mkdir -p /data/bin')
             transport.push(programs['wg'], '/data/bin/wg.staged', True)
             transport.shell('/data/bin/wg.staged --version >/dev/null; mv /data/bin/wg.staged /data/bin/wg')
+        if 'sing-box' in programs:
+            # A running proxy keeps its old inode; the agent uses the new binary on its next start.
+            transport.shell('mkdir -p /data/bin /data/local/tmp/openui-singbox-licenses')
+            transport.push(programs['sing-box'], '/data/bin/sing-box.staged', True)
+            transport.shell('/data/bin/sing-box.staged version >/dev/null; mv /data/bin/sing-box.staged /data/bin/sing-box')
+            transport.push((ROOT / 'licenses/sing-box-LICENSE.txt').read_bytes(), '/data/local/tmp/openui-singbox-licenses/LICENSE')
         if 'openui-screen' in programs:
             transport.shell('test ! -e /tmp/openui-screen/owner; mkdir -p /data/bin /data/local/tmp/openui-screen-licenses')
             transport.push(programs['openui-screen'], '/data/bin/openui-screen.staged', True)
@@ -418,6 +433,7 @@ def main():
     parser.add_argument('--ssh-key', help='SSH private key for the existing installation')
     parser.add_argument('--screen', help='aarch64 openui-screen binary; web entry remains gated until recovery verification')
     parser.add_argument('--wireguard-tools', help='Verified aarch64 wg binary to include in the deployment snapshot')
+    parser.add_argument('--singbox-binary', help='Verified aarch64 sing-box binary to include in the deployment snapshot')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--bundle-output')
     parser.add_argument('--release-agent')

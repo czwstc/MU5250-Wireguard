@@ -68,7 +68,7 @@ try:
     invalid.pop('revision')
     assert not api('/api/screen/settings', 'PUT', invalid)['ok']
     assert settings() == original
-    trial = save(dict(original, shortcut_enabled=False, brightness=160, idle_seconds=30, home_page='overview', menu_items=['overview', 'wireguard']))
+    trial = save(dict(original, shortcut_enabled=False, corner_shortcut_enabled=False, brightness=160, idle_seconds=30, home_page='singbox', menu_items=['singbox']))
     stale = dict(invalid, brightness=200)
     assert not api('/api/screen/settings', 'PUT', stale)['ok']
     assert settings() == trial
@@ -78,7 +78,7 @@ try:
     wait(lambda: api('/api/screen')['data']['state'] == 'active')
     wait(lambda: remote('cat /sys/class/leds/led:lcd/brightness') == '160')
     owner = remote('cat /tmp/openui-screen/owner')
-    trial = save(dict(trial, brightness=192, home_page='menu', menu_items=original['menu_items']))
+    trial = save(dict(trial, brightness=192, home_page='overview', menu_items=original['menu_items']))
     wait(lambda: remote('cat /sys/class/leds/led:lcd/brightness') == '192')
     assert remote('cat /tmp/openui-screen/owner') == owner
     print('PASS authenticated, versioned settings; live brightness without panel restart; private storage', flush=True)

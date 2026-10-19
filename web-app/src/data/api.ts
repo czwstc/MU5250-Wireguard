@@ -7,6 +7,9 @@ import { readCsv } from './client'
 import { get, post, put, req } from './client'
 import type {
   AtSendResult,
+  SingBoxProxies,
+  SingBoxStatus,
+  SingBoxUpdate,
   WireGuardStatus,
   ScreenStatus,
   DevUISettings,
@@ -628,6 +631,12 @@ export const api = {
   screenClose: () => req('DELETE', '/api/screen'),
   wireguard: () => get('/api/wireguard').then(d => d as unknown as WireGuardStatus),
   wireguardSet: (body: WireGuardUpdate) => req('PUT', '/api/wireguard', body, undefined, 120_000).then(d => d as unknown as WireGuardStatus),
+  singbox: () => get('/api/singbox').then(d => d as unknown as SingBoxStatus),
+  singboxSet: (body: SingBoxUpdate) => req('PUT', '/api/singbox', body, undefined, 120_000).then(d => d as unknown as SingBoxStatus),
+  singboxProxies: () => get('/api/singbox/proxies').then(d => d as unknown as SingBoxProxies),
+  singboxSelect: (group: string, name: string) => req('PUT', '/api/singbox/proxies', { group, name }).then(d => d as unknown as SingBoxProxies),
+  singboxDelay: (group: string) => req('POST', '/api/singbox/delay', { group }, undefined, 150_000).then(d => d as unknown as SingBoxProxies),
+  singboxLogs: () => get('/api/singbox/logs').then(d => (Array.isArray(d.lines) ? d.lines : []) as string[]),
   // Home — single batched request
   home: () => get('/api/dashboard').then(mapHome),
 

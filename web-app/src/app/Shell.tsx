@@ -1,16 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useAlerts } from './HomeContext'
-import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun, IShield, IMonitor } from '../icons'
+import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun, IShield, IMonitor, IRoute } from '../icons'
 import { Spinner } from '../ui/primitives'
 
-export type Group = 'home' | 'signal' | 'network' | 'wireguard' | 'modem' | 'devui' | 'system'
+export type Group = 'home' | 'signal' | 'network' | 'wireguard' | 'singbox' | 'modem' | 'devui' | 'system'
 
 export const NAV: { id: Group; label: string; icon: (p: { size?: number; className?: string }) => ReactNode }[] = [
   { id: 'home', label: 'Home', icon: (p) => <IHome {...p} /> },
   { id: 'signal', label: 'Signal', icon: (p) => <ISignal {...p} /> },
   { id: 'network', label: 'Network', icon: (p) => <IGlobe {...p} /> },
   { id: 'wireguard', label: 'WireGuard', icon: (p) => <IShield {...p} /> },
+  { id: 'singbox', label: 'sing-box', icon: (p) => <IRoute {...p} /> },
   { id: 'modem', label: 'Modem', icon: (p) => <ISim {...p} /> },
   { id: 'devui', label: 'DevUI', icon: (p) => <IMonitor {...p} /> },
   { id: 'system', label: 'System', icon: (p) => <IGauge {...p} /> },
@@ -21,6 +22,7 @@ const GROUP_TITLES: Record<Group, string> = {
   signal: 'Signal',
   network: 'Network',
   wireguard: 'WireGuard',
+  singbox: 'sing-box',
   modem: 'Modem',
   devui: 'DevUI',
   system: 'System',
@@ -93,7 +95,7 @@ export default function Shell({
             <ISignal size={17} />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-[13px] font-bold text-ink">OpenUI + WireGuard</p>
+            <p className="truncate text-[13px] font-bold text-ink">MU5250</p>
             <p className="tnum truncate text-[11px] text-ink3">{window.location.hostname}</p>
           </div>
         </div>
@@ -171,12 +173,13 @@ export default function Shell({
                 <button
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
-                  className={`flex flex-1 flex-col items-center gap-0.5 pb-1.5 pt-2 text-[10px] font-semibold transition-colors ${
+                  className={`flex min-w-0 flex-1 flex-col items-center gap-0.5 pb-1.5 pt-2 text-[9px] font-semibold tracking-tighter transition-colors ${
                     active ? 'text-accent' : 'text-ink3 hover:text-ink2'
                   }`}
                 >
                   {item.icon({ size: 20 })}
-                  {item.label}
+                  {/* Eight tabs share a 375px phone width; keep labels apart. */}
+                  <span className="max-w-full truncate">{item.label}</span>
                 </button>
               )
             })}

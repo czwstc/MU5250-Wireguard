@@ -12,9 +12,17 @@ a { text-decoration:none; color:#f2f5fa; }
 .good { color:#64e2aa; }
 .warn { color:#ffc77b; }
 .bad { color:#ff9999; }
+.grey { color:#8494aa; }
+.center { text-align:center; }
 .row { display:block; padding:0; background:#1e2a3c; border:1px solid #35445a; border-radius:10px; height:56px; }
+.row.current { background:#1d3358; border-color:#3776ec; }
 .name { margin:5px 10px 0; height:23px; white-space:nowrap; overflow:hidden; }
 .sub { margin:2px 10px 0; font-size:14px; color:#a7b6ca; white-space:nowrap; overflow:hidden; }
+.chev { font-size:22px; color:#a7b6ca; }
 .footer { color:#a7b6ca; font-size:13px; }
-
-.battery-value { font-size:36px; font-weight:bold; color:#f2f5fa; }
+.divider { background:#2c3b4d; }
+.pct { font-size:32px; font-weight:bold; color:#f2f5fa; line-height:44px; }
+.pct.bad { color:#ff9999; }
+.pct.grey { color:#a7b6ca; }
+.sigtype { font-size:20px; font-weight:bold; white-space:nowrap; }
+.nosig { font-size:15px; white-space:nowrap; }

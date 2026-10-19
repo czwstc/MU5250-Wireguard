@@ -10,11 +10,17 @@ use std::{
 };
 const DIR: &str = "/data/local/tmp/openui-devui";
 const FILE: &str = "/data/local/tmp/openui-devui/settings.json";
+/// Gateway entries shown on the Overview page.
+const GATEWAYS: [&str; 2] = ["singbox", "wireguard"];
+const HOME_PAGES: [&str; 3] = ["overview", "singbox", "wireguard"];
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub revision: u64,
     pub shortcut_enabled: bool,
+    /// Long-press the stock UI's top-left corner to open DevUI.
+    #[serde(default)]
+    pub corner_shortcut_enabled: bool,
     pub brightness: u16,
     pub idle_seconds: u16,
     pub home_page: String,
@@ -25,12 +31,11 @@ impl Default for Settings {
         Self {
             revision: 1,
             shortcut_enabled: false,
+            corner_shortcut_enabled: false,
             brightness: 128,
             idle_seconds: 120,
-            home_page: "menu".into(),
-            menu_items: ["overview", "wireguard", "profiles", "devices"]
-                .map(String::from)
-                .to_vec(),
+            home_page: "overview".into(),
+            menu_items: GATEWAYS.map(String::from).to_vec(),
         }
     }
 }
@@ -42,29 +47,50 @@ impl Settings {
         if !(30..=600).contains(&self.idle_seconds) {
             return Err("Idle return must be between 30 and 600 seconds");
         }
-        if self.menu_items.is_empty() || self.menu_items.len() > 4 {
-            return Err("Choose at least one menu item");
-        }
         let mut seen = std::collections::HashSet::new();
         for item in &self.menu_items {
-            if !["overview", "wireguard", "profiles", "devices"].contains(&item.as_str())
-                || !seen.insert(item)
-            {
-                return Err("Invalid or duplicate menu item");
+            if !GATEWAYS.contains(&item.as_str()) || !seen.insert(item) {
+                return Err("Invalid or duplicate Overview entry");
             }
         }
-        if self.home_page != "menu" && !self.menu_items.contains(&self.home_page) {
-            return Err("The startup page must be visible in the menu");
+        if !HOME_PAGES.contains(&self.home_page.as_str()) {
+            return Err("Invalid startup page");
+        }
+        if self.home_page != "overview" && !self.menu_items.contains(&self.home_page) {
+            return Err("The startup page must be shown on the Overview");
         }
         Ok(())
     }
+    /// Settings saved by the earlier menu-based DevUI: the main menu and its
+    /// WireGuard sub-pages become the Overview hub. The shortcut, brightness and
+    /// idle settings are kept as they were.
+    fn migrated(mut self) -> Self {
+        let old = std::mem::take(&mut self.menu_items);
+        if !old.iter().all(|i| GATEWAYS.contains(&i.as_str())) {
+            self.menu_items.push("singbox".into());
+            if old
+                .iter()
+                .any(|i| ["wireguard", "profiles", "devices"].contains(&i.as_str()))
+            {
+                self.menu_items.push("wireguard".into());
+            }
+        } else {
+            self.menu_items = old;
+        }
+        if !HOME_PAGES.contains(&self.home_page.as_str())
+            || (self.home_page != "overview" && !self.menu_items.contains(&self.home_page))
+        {
+            self.home_page = "overview".into();
+        }
+        self
+    }
+    /// Screen page IDs: Overview 0, sing-box 1, WireGuard 2; the mask holds the
+    /// gateway entries shown on the Overview.
     pub fn projection(&self) -> String {
         let page = |s: &str| match s {
-            "wireguard" => 0,
-            "devices" => 1,
-            "profiles" => 3,
-            "overview" => 4,
-            _ => 2,
+            "singbox" => 1,
+            "wireguard" => 2,
+            _ => 0,
         };
         let mask = self.menu_items.iter().fold(0u32, |m, s| m | (1 << page(s)));
         format!(
@@ -83,6 +109,7 @@ fn state() -> &'static Mutex<Settings> {
         let saved = fs::read(FILE)
             .ok()
             .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
+            .map(Settings::migrated)
             .filter(|s| s.validate().is_ok());
         Mutex::new(saved.unwrap_or_default())
     })
@@ -98,6 +125,7 @@ pub fn get() -> (u16, Value) {
 struct Update {
     expected_revision: u64,
     shortcut_enabled: bool,
+    corner_shortcut_enabled: bool,
     brightness: u16,
     idle_seconds: u16,
     home_page: String,
@@ -114,6 +142,7 @@ fn prepare(old: &Settings, body: &[u8]) -> Result<Settings, (u16, &'static str)>
             .checked_add(1)
             .ok_or((400, "Revision limit reached"))?,
         shortcut_enabled: u.shortcut_enabled,
+        corner_shortcut_enabled: u.corner_shortcut_enabled,
         brightness: u.brightness,
         idle_seconds: u.idle_seconds,
         home_page: u.home_page,
@@ -146,7 +175,7 @@ pub fn update(body: &[u8]) -> (u16, Value) {
 mod tests {
     use super::*;
     fn body() -> Value {
-        json!({"expected_revision":1,"shortcut_enabled":true,"brightness":160,"idle_seconds":90,"home_page":"overview","menu_items":["overview","wireguard"]})
+        json!({"expected_revision":1,"shortcut_enabled":true,"corner_shortcut_enabled":true,"brightness":160,"idle_seconds":90,"home_page":"singbox","menu_items":["singbox"]})
     }
     #[test]
     fn validation_and_conflicts() {
@@ -154,16 +183,17 @@ mod tests {
         let b = body();
         let next = prepare(&old, &serde_json::to_vec(&b).unwrap()).unwrap();
         assert_eq!(next.revision, 2);
-        assert!(next.shortcut_enabled);
-        assert_eq!(next.projection(), "C 2 90 160 4 17\n");
+        assert!(next.shortcut_enabled && next.corner_shortcut_enabled);
+        assert_eq!(next.projection(), "C 2 90 160 1 2\n");
         for (key, value) in [
             ("brightness", json!(0)),
             ("brightness", json!(256)),
             ("idle_seconds", json!(29)),
             ("idle_seconds", json!(601)),
-            ("menu_items", json!([])),
-            ("menu_items", json!(["overview", "overview"])),
-            ("home_page", json!("devices")),
+            ("menu_items", json!(["singbox", "singbox"])),
+            ("menu_items", json!(["overview"])),
+            ("home_page", json!("wireguard")),
+            ("home_page", json!("menu")),
             ("command", json!("reboot")),
         ] {
             let mut bad = b.clone();
@@ -182,5 +212,32 @@ mod tests {
             409
         );
         assert!(prepare(&old, b"{}").is_err());
+        let mut both_hidden = b.clone();
+        both_hidden["menu_items"] = json!([]);
+        both_hidden["home_page"] = json!("overview");
+        let hidden = prepare(&old, &serde_json::to_vec(&both_hidden).unwrap()).unwrap();
+        assert_eq!(hidden.projection(), "C 2 90 160 0 0\n");
+        assert_eq!(Settings::default().projection(), "C 1 120 128 0 6\n");
+    }
+    #[test]
+    fn menu_era_settings_migrate_and_keep_the_shortcut() {
+        let saved: Settings = serde_json::from_value(json!({"revision":7,"shortcut_enabled":true,"brightness":128,
+            "idle_seconds":120,"home_page":"menu","menu_items":["overview","wireguard","profiles","devices"]}))
+        .unwrap();
+        let s = saved.migrated();
+        s.validate().unwrap();
+        assert!(s.shortcut_enabled && !s.corner_shortcut_enabled);
+        assert_eq!((s.revision, s.home_page.as_str()), (7, "overview"));
+        assert_eq!(s.menu_items, ["singbox", "wireguard"]);
+        let only_overview: Settings = serde_json::from_value(
+            json!({"revision":2,"shortcut_enabled":false,"brightness":64,
+            "idle_seconds":60,"home_page":"overview","menu_items":["overview"]}),
+        )
+        .unwrap();
+        let s = only_overview.migrated();
+        s.validate().unwrap();
+        assert_eq!(s.menu_items, ["singbox"]);
+        let current = Settings::default().migrated();
+        assert_eq!(current.menu_items, GATEWAYS);
     }
 }

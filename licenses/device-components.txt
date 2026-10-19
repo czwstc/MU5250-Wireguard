@@ -5,6 +5,12 @@ License: wireguard-tools-GPL-2.0.txt
 Source: https://git.zx2c4.com/wireguard-tools/
 OpenWrt build recipe: https://github.com/openwrt/openwrt/tree/openwrt-23.05/package/network/utils/wireguard-tools
 
+sing-box: official SagerNet release 1.14.3 (sing-box-1.14.3-linux-arm64-musl, static); GPL-3.0-or-later
+with an additional naming term from its author.
+License: sing-box-LICENSE.txt (notice shipped with the release); full GPL-3.0 text: https://www.gnu.org/licenses/gpl-3.0.txt
+Source: https://github.com/SagerNet/sing-box/tree/v1.14.3
+This project runs sing-box unmodified as a separate program and is not affiliated with or endorsed by its author.
+
 Dropbear: bundled pinned OpenWrt package; MIT and third-party terms.
 License: dropbear-LICENSE.txt
 Source: https://github.com/mkj/dropbear

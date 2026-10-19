@@ -431,6 +431,8 @@ def wireguard_set(body):
         else: raise ValueError("Unknown profile action")
     else:
         current.update({k: body[k] for k in ("enabled", "mode", "macs") if k in body})
+    if current["enabled"] and STATE["singbox"]["enabled"]:
+        raise ValueError("Turn sing-box off before enabling WireGuard")
     active = next((p for p in profiles if p["id"] == current["active_profile"]), None)
     current.update({"has_config": active is not None, "endpoint": active["endpoint"] if active else None,
                     "address": active["address"] if active else None, "dns": "1.1.1.1" if active else None, "mtu": 1280 if active else None})
@@ -442,8 +444,143 @@ def wireguard_set(body):
     return current
 
 
+# Demo sing-box: profile metadata and synthetic node groups only. Pasted
+# configurations and subscription links are inspected, never stored.
+SINGBOX_DEMO_GROUPS = [
+    {"name": "Proxy", "type": "Selector", "now": "HK 01", "selectable": True, "options": [
+        {"name": "Auto", "type": "URLTest", "delay": None},
+        {"name": "HK 01", "type": "VLESS", "delay": None},
+        {"name": "HK 02", "type": "Hysteria2", "delay": None},
+        {"name": "JP 01", "type": "Shadowsocks", "delay": None},
+        {"name": "SG 01", "type": "Trojan", "delay": None},
+        {"name": "US 01", "type": "VMess", "delay": None},
+        {"name": "direct", "type": "Direct", "delay": None}]},
+    {"name": "Auto", "type": "URLTest", "now": "JP 01", "selectable": False, "options": [
+        {"name": "HK 01", "type": "VLESS", "delay": None},
+        {"name": "HK 02", "type": "Hysteria2", "delay": None},
+        {"name": "JP 01", "type": "Shadowsocks", "delay": None},
+        {"name": "SG 01", "type": "Trojan", "delay": None},
+        {"name": "US 01", "type": "VMess", "delay": None}]},
+]
+
+
+def singbox_nodes(text):
+    config = json.loads(text)
+    if not isinstance(config, dict):
+        raise ValueError("Configuration must be a sing-box JSON object")
+    skip = {"direct", "block", "dns", "selector", "urltest"}
+    nodes = [o for o in config.get("outbounds", []) + config.get("endpoints", []) if o.get("type") not in skip]
+    if not nodes:
+        raise ValueError("No proxy outbounds found in the configuration")
+    return len(nodes)
+
+
+def singbox_set(body):
+    import copy
+    current = copy.deepcopy(STATE["singbox"])
+    profiles = current["profiles"]
+    action = body.get("profile")
+    if action:
+        kind = action.get("action")
+        picked = next((p for p in profiles if p["id"] == action.get("id")), None)
+        if kind in ("save", "subscribe", "rename"):
+            name = action.get("name", "").strip()
+            if not name or len(name) > 48 or any(ord(c) < 32 for c in name):
+                raise ValueError("Profile name must contain 1–48 characters without control characters")
+            if any(p["name"].lower() == name.lower() and (kind != "rename" or p is not picked) for p in profiles):
+                raise ValueError("A profile with this name already exists")
+        if kind in ("save", "subscribe"):
+            if len(profiles) >= 5:
+                raise ValueError("A maximum of 5 profiles can be saved; delete one first")
+            if kind == "save":
+                try:
+                    nodes = singbox_nodes(action.get("config_text", ""))
+                except json.JSONDecodeError:
+                    raise ValueError("Not a sing-box JSON configuration (share links and Clash YAML are not supported)")
+                host = None
+            else:
+                url = action.get("url", "").strip()
+                if not url.startswith(("https://", "http://")):
+                    raise ValueError("Subscription URL must start with https:// or http://")
+                nodes, host = 6, url.split("://", 1)[1].split("/")[0].split("?")[0].rsplit("@", 1)[-1]
+            picked = {"id": max((p["id"] for p in profiles), default=0) + 1, "name": name,
+                      "source": "file" if kind == "save" else "subscription", "host": host,
+                      "nodes": nodes, "updated": int(time.time())}
+            profiles.append(picked)
+            if current["active_profile"] is None: current["active_profile"] = picked["id"]
+        elif not picked:
+            raise ValueError("Profile not found")
+        elif kind == "activate": current["active_profile"] = picked["id"]
+        elif kind == "rename": picked["name"] = name
+        elif kind == "refresh":
+            if picked["source"] != "subscription": raise ValueError("Only subscription profiles can be refreshed")
+            picked["updated"] = int(time.time())
+        elif kind == "delete":
+            if current["active_profile"] == picked["id"]:
+                if current["enabled"]: raise ValueError("Switch profiles or turn sing-box off before deleting the active profile")
+                current["active_profile"] = None
+            profiles.remove(picked)
+        else: raise ValueError("Unknown profile action")
+    else:
+        current.update({k: body[k] for k in ("enabled", "mode", "macs") if k in body})
+    current["has_config"] = current["active_profile"] is not None
+    if current["enabled"] and not current["has_config"]:
+        raise ValueError("Import a sing-box configuration first")
+    if current["enabled"] and STATE["wireguard"]["enabled"]:
+        raise ValueError("Turn WireGuard off before enabling sing-box")
+    current["revision"] += 1
+    running = bool(current["enabled"])
+    if running and not current["running"]:
+        current.update({"started": int(time.time()), "pid": 4242})
+    current.update({"running": running, "healthy": running, "ready": running, "starting": False, "memory_rss": 41943040 if running else 0})
+    if not running: current["pid"] = None
+    STATE["singbox"] = current
+    return singbox_status()
+
+
+def singbox_status():
+    value = dict(STATE["singbox"])
+    value["wireguard_enabled"] = STATE["wireguard"]["enabled"]
+    value["uptime"] = int(time.time()) - value.pop("started", int(time.time())) if value["running"] else 0
+    if value["running"]:
+        value["rx_bytes"] = 268435456 + value["uptime"] * 4096
+        value["tx_bytes"] = 33554432 + value["uptime"] * 1024
+    return value
+
+
+def singbox_proxies():
+    return {"running": STATE["singbox"]["running"], "groups": STATE["singbox_groups"] if STATE["singbox"]["running"] else []}
+
+
+def singbox_select(body):
+    group = next((g for g in STATE["singbox_groups"] if g["name"] == body.get("group")), None)
+    if not STATE["singbox"]["running"] or not group:
+        raise ValueError("sing-box is not running or the group does not exist")
+    if not group["selectable"]:
+        raise ValueError("This group selects nodes automatically")
+    if not any(o["name"] == body.get("name") for o in group["options"]):
+        raise ValueError("Node not found in this group")
+    group["now"] = body["name"]
+    STATE["singbox_logs"].append(f"[openui] {group['name']} → {body['name']}")
+    return singbox_proxies()
+
+
+def singbox_delay(body):
+    group = next((g for g in STATE["singbox_groups"] if g["name"] == (body or {}).get("group")), None)
+    if not STATE["singbox"]["running"] or not group:
+        raise ValueError("sing-box is not running or the group does not exist")
+    for option in group["options"]:
+        delay = 0 if option["name"] == "US 01" else 1 if option["type"] == "Direct" else random.randint(60, 900)
+        for g in STATE["singbox_groups"]:
+            for o in g["options"]:
+                if o["name"] == option["name"]: o["delay"] = delay
+    return singbox_proxies()
+
+
 ROUTES_PUT = {
     "/api/wireguard": wireguard_set,
+    "/api/singbox": singbox_set,
+    "/api/singbox/proxies": singbox_select,
     "/api/device/charge-control": put_charge_control,
     "/api/ttl/set": put_ttl_set,
     "/api/wifi/settings": put_wifi_settings,
@@ -461,12 +598,23 @@ STATE["wireguard"] = {"profiles": [], "active_profile": None, "max_profiles": 5,
       "latest_handshake": 0, "rx_bytes": 0, "tx_bytes": 0, "error": None, "endpoint": None,
       "address": None, "dns": None, "mtu": None, "ipv6_policy": "blocked_for_tunnel_devices"}
 
-STATE["screen_settings"] = {"revision": 1, "shortcut_enabled": False, "brightness": 128, "idle_seconds": 120, "home_page": "menu", "menu_items": ["overview", "wireguard", "profiles", "devices"]}
-STATE["screen"] = {"available": True, "verified": True, "running": False, "state": "idle", "settings_revision": 1, "shortcut": {"available": True, "message": "Shortcut disabled"}}
+STATE["singbox"] = {"profiles": [], "active_profile": None, "max_profiles": 5, "revision": 0, "enabled": False, "mode": "all", "macs": [],
+      "has_config": False, "binary_installed": True, "version": "1.14.3", "kernel_supported": True, "running": False, "pid": None,
+      "memory_rss": 0, "ready": False, "starting": False, "healthy": False, "rx_bytes": 0, "tx_bytes": 0, "error": None,
+      "ipv6_policy": "blocked_for_proxied_devices"}
+STATE["singbox_groups"] = SINGBOX_DEMO_GROUPS
+STATE["singbox_logs"] = ["+0800 2026-10-18 09:12:03 WARN dns: exchange failed for example.invalid: NXDOMAIN"]
+
+STATE["screen_settings"] = {"revision": 1, "shortcut_enabled": False, "corner_shortcut_enabled": False, "brightness": 128, "idle_seconds": 120, "home_page": "overview", "menu_items": ["singbox", "wireguard"]}
+STATE["screen"] = {"available": True, "verified": True, "running": False, "state": "idle", "settings_revision": 1,
+                   "shortcut": {"available": True, "message": "Shortcut disabled", "corner": {"available": True, "message": "Shortcut disabled"}}}
 
 ROUTES_GET = {
     "/api/modem/qos": lambda: {"status":"available", "sampled_at":int(time.time()), "source":"synthetic-demo", "stale":False, "error":None, "bearers":[{"id":"wwaniface1", "cid":1, "qci":6, "five_qi":None, "default_data":True, "connected":True, "technology":"SA", "apn":None, "interface":"rmnet_data0"}]},
     "/api/wireguard": lambda: STATE["wireguard"],
+    "/api/singbox": singbox_status,
+    "/api/singbox/proxies": singbox_proxies,
+    "/api/singbox/logs": lambda: {"lines": STATE["singbox_logs"][-200:]},
     "/api/screen": lambda: STATE["screen"],
     "/api/screen/settings": lambda: STATE["screen_settings"],
     "/api/dashboard": dashboard_batch,
@@ -523,6 +671,7 @@ ROUTES_GET = {
 }
 
 ROUTES_POST = {
+    "/api/singbox/delay": singbox_delay,
     "/api/sms/list": lambda body: sms_list(),
     "/api/system/kill-bloat": lambda body: {
         "killed": [
@@ -590,7 +739,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"ok": True, "data": STATE["screen"]})
         fn = ROUTES_POST.get(path)
         if fn:
-            return self._send({"ok": True, "data": fn(body)})
+            try:
+                return self._send({"ok": True, "data": fn(body)})
+            except ValueError as error:
+                return self._send({"ok": False, "error": str(error)}, 400)
         return self._send({"ok": True, "data": {}})
 
     def do_PUT(self):
@@ -600,14 +752,20 @@ class Handler(BaseHTTPRequestHandler):
             old = STATE["screen_settings"]
             if body.get("expected_revision") != old["revision"]:
                 return self._send({"ok": False, "error": "DevUI settings changed. Reload before saving."}, 409)
-            if not 20 <= body.get("brightness", 0) <= 255 or not 30 <= body.get("idle_seconds", 0) <= 600 or not body.get("menu_items"):
+            items = body.get("menu_items", [])
+            if (not 20 <= body.get("brightness", 0) <= 255 or not 30 <= body.get("idle_seconds", 0) <= 600
+                    or any(i not in ("singbox", "wireguard") for i in items) or len(set(items)) != len(items)
+                    or body.get("home_page") not in ["overview", *items]):
                 return self._send({"ok": False, "error": "Invalid DevUI settings"}, 400)
             STATE["screen_settings"] = {k: body[k] for k in old if k != "revision"}
             STATE["screen_settings"]["revision"] = old["revision"] + 1
             STATE["screen"]["settings_revision"] = old["revision"] + 1
             STATE["screen"]["shortcut"]["message"] = "Ready: four short presses within 2.5 seconds" if body["shortcut_enabled"] else "Shortcut disabled"
+            STATE["screen"]["shortcut"]["corner"]["message"] = "Ready: hold the top-left corner for 2 seconds" if body["corner_shortcut_enabled"] else "Shortcut disabled"
             return self._send({"ok": True, "data": STATE["screen_settings"]})
         if path == "/api/wireguard" and body.get("expected_revision", STATE["wireguard"]["revision"]) != STATE["wireguard"]["revision"]:
+            return self._send({"ok": False, "error": "Configuration changed; refresh before saving"}, 409)
+        if path == "/api/singbox" and body.get("expected_revision") != STATE["singbox"]["revision"]:
             return self._send({"ok": False, "error": "Configuration changed; refresh before saving"}, 409)
         fn = ROUTES_PUT.get(path)
         if fn:
@@ -634,6 +792,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=9090)
     ap.add_argument('--wireguard-demo', action='store_true', help='Load synthetic configured tunnel and device choices for screenshots')
+    ap.add_argument('--singbox-demo', action='store_true', help='Load synthetic sing-box profiles, node groups and device choices for screenshots')
     args = ap.parse_args()
     if args.wireguard_demo:
         STATE['wireguard'].update({'revision': 1, 'enabled': True, 'has_config': True,
@@ -649,6 +808,15 @@ def main():
             value['latest_handshake'] = int(time.time()) - 15 if value['enabled'] else 0
             return value
         ROUTES_GET['/api/wireguard'] = wg_demo_status
+    if args.singbox_demo and not args.wireguard_demo:
+        now = int(time.time())
+        STATE['singbox'].update({'revision': 1, 'enabled': True, 'has_config': True, 'running': True, 'healthy': True,
+            'ready': True, 'pid': 4242, 'started': now - 7380, 'memory_rss': 41943040,
+            'macs': ['02:00:00:00:00:03'], 'active_profile': 1, 'profiles': [
+                {'id': 1, 'name': 'Airport', 'source': 'subscription', 'host': 'sub.example.com', 'nodes': 5, 'updated': now - 3600},
+                {'id': 2, 'name': 'Self-hosted', 'source': 'file', 'host': None, 'nodes': 2, 'updated': now - 86400 * 3}]})
+        for option in STATE['singbox_groups'][0]['options'] + STATE['singbox_groups'][1]['options']:
+            option['delay'] = {'HK 01': 86, 'HK 02': 112, 'JP 01': 74, 'SG 01': 188, 'US 01': 0, 'Auto': 74}.get(option['name'])
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"mock zte-agent listening on http://localhost:{args.port}")
     srv.serve_forever()

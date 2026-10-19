@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../data/api'
 import type { Client, WireGuardStatus, WireGuardProfileAction } from '../../types'
 import { Button, Input, Select, Toggle } from '../../ui/controls'
+import DeviceRouting from '../../ui/DeviceRouting'
 import { Card, Chip, Stat } from '../../ui/primitives'
 import { confirm, toast, toastError } from '../../ui/feedback'
 
@@ -94,10 +95,6 @@ export default function WireGuardTab() {
   const profiles = status?.profiles ?? []
   const picked = profiles.find(p => String(p.id) === profileId) ?? profiles.find(p => p.id === status?.active_profile) ?? profiles[0]
   const active = profiles.find(p => p.id === status?.active_profile)
-  const known = new Map(clients.filter(c => c.mac).map(c => [c.mac.toLowerCase(), c]))
-  for (const m of macs) if (!known.has(m)) known.set(m, { mac: m, hostname: 'Saved device (offline)' } as Client)
-  const rows = [...known.values()]
-  const selected = (m: string) => mode === 'all' ? !macs.includes(m) : macs.includes(m)
   const dirty = mode !== status?.mode || [...macs].sort().join() !== [...(status?.macs ?? [])].sort().join()
   const ready = !!status?.kernel_supported && !!status?.tools_installed && !!status?.has_config
   const summary = status?.connected ? 'Recent handshake' : status?.enabled ? status.error ? 'Needs attention' : 'Waiting for handshake' : 'Off'
@@ -170,21 +167,7 @@ export default function WireGuardTab() {
 
       <Card title="Which devices use WireGuard?">
         <div className="space-y-3">
-          <Select aria-label="Device routing mode" value={mode} disabled={busy} onChange={e => { editing.current = true; const next = e.target.value as 'all' | 'selected'; setMacs(rows.filter(c => next === 'selected' ? selected(c.mac.toLowerCase()) : !selected(c.mac.toLowerCase())).map(c => c.mac.toLowerCase())); setMode(next) }}>
-            <option value="all">All devices — new devices join automatically</option>
-            <option value="selected">Selected devices only — new devices use normal network</option>
-          </Select>
-          <p className="text-xs text-ink2">Checked: WireGuard. Unchecked: normal network. Choices follow the device MAC address, even when its IP changes. A private/random MAC is treated as a different device.</p>
-          <div className="divide-y divide-line/10 rounded-lg border border-line/10">
-            {rows.length === 0 ? <p className="p-4 text-sm text-ink3">No devices found. In all-devices mode, new connections will use WireGuard.</p> : rows.map(c => {
-              const m = c.mac.toLowerCase(), checked = selected(m)
-              return <label key={m} className="flex cursor-pointer items-center gap-3 px-3 py-3 hover:bg-surface2/50">
-                <input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={checked} disabled={busy} onChange={() => { editing.current = true; setMacs(prev => prev.includes(m) ? prev.filter(v => v !== m) : [...prev, m]) }} />
-                <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium text-ink">{c.hostname || c.ip || 'Connected device'}</span><span className="block break-all font-mono text-[11px] text-ink3">{c.ip || 'Offline'} · {m}</span></span>
-                <Chip tone={checked ? 'accent' : 'default'}>{checked ? 'WireGuard' : 'Direct'}</Chip>
-              </label>
-            })}
-          </div>
+          <DeviceRouting feature="WireGuard" mode={mode} macs={macs} clients={clients} disabled={busy} onChange={(nextMode, nextMacs) => { editing.current = true; setMode(nextMode); setMacs(nextMacs) }} />
           <p className="rounded-lg bg-surface2/60 p-3 text-xs leading-relaxed text-ink2">When enabled, tunnel devices cannot fall back to the normal network if the VPN stops responding. DNS over IPv4 is sent through the tunnel. Router management stays accessible. Applying changes briefly pauses forwarded traffic while rules are replaced. After changing a device’s route, reconnect its apps or Wi-Fi so existing connections can restart.</p>
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" loading={busy} disabled={!status || !status.has_config} onClick={() => void save(status?.enabled ?? false)}>Save {status?.enabled ? '& apply' : 'device choices'}</Button>

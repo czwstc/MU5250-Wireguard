@@ -30,7 +30,9 @@ targets="$legacy_targets
 data/bin/wg
 data/bin/openui-screen
 data/local/tmp/openui-screen-verified
-data/local/tmp/openui-screen-licenses"
+data/local/tmp/openui-screen-licenses
+data/bin/sing-box
+data/local/tmp/openui-singbox-licenses"
 
 case "$action" in
 begin)

@@ -177,7 +177,7 @@ class TerminalDeployment(unittest.TestCase):
         from unittest.mock import patch
         payload = bytes(range(256)) * 100
         transfers, commands, local_paths = [], [], []
-        def legacy_run(args, data=None):
+        def legacy_run(args, data=None, timeout=60):
             self.assertIsNone(data, 'Legacy adbd cannot reliably terminate streamed stdin')
             if args[3] == 'push':
                 source = Path(args[4]); local_paths.append(source)

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
- * WireGuard touch UI; native display and root IPC only. See LICENSE and NOTICE.
+ * DevUI touch UI (Overview, sing-box, WireGuard); native display and root IPC
+ * only. See LICENSE and NOTICE.
  */
 #define _GNU_SOURCE
 #include <assert.h>
@@ -53,20 +54,31 @@ static void draw_pixel(struct drm_buf *b, int x, int y, uint16_t c) {
 #define RED 0xfa8a
 #define RUNDIR "/tmp/openui-screen"
 #define BL "/sys/class/leds/led:lcd/brightness"
+#define MAX_NODES 32
 struct row {
   char mac[18], ip[48], name[193];
-  int selected, online;
+  int selected, online, sb; /* selected: WireGuard; sb: sing-box */
 };
-struct profile { unsigned long long id; int active; char name[193]; };
+struct profile { unsigned long long id; int active, nodes; char source; char name[193]; };
+struct node { int delay; char type[49], pick[193], name[193]; };
 struct snapshot {
   unsigned long long rev, handshake, rx, tx, stamp, job, done;
   int has, enabled, connected, error, all, busy, result, n;
-  int np, battery, temperature;
+  int np, battery, temperature, charging;
   unsigned long long settings_rev;
   int idle_seconds, brightness, home_page, menu_mask;
   unsigned long long uptime;
   double memory, cpu;
-  struct profile profiles[5];
+  /* Radio summary (G record). */
+  int sig_ok, sig_bars, sig_rsrp;
+  char sig_type[24], sig_operator[193];
+  /* sing-box (B, Q, M and N records). */
+  int sb_ok, sb_installed, sb_enabled, sb_running, sb_ready, sb_starting, sb_error, sb_all, nq;
+  unsigned long long sb_rev, sb_rx, sb_tx, sb_uptime, sb_memory, node_ver;
+  int node_now, nn;
+  char group[193];
+  struct profile profiles[5], sb_profiles[5];
+  struct node nodes[MAX_NODES];
   struct row rows[MAX_ROWS];
 };
 static struct snapshot data, draft;
@@ -74,12 +86,18 @@ static int original_selection[MAX_ROWS];
 #ifndef SCREEN_PREVIEW
 static int screen_awake = 1;
 #endif
-enum { WG, DEVICES, MENU, PROFILES, OVERVIEW };
-static int page = MENU, offset, dialog, dirty, quitting, need_draw = 1,
-                                                  return_after_save;
+/* Page IDs 0-2 match the agent's settings projection (startup page, Overview mask). */
+enum { OVERVIEW, SB, WG, SB_NODES, SB_PROFILES, SB_DEVICES, WG_PROFILES, WG_DEVICES };
+enum { A_TOGGLE, A_PROFILE, A_DEVICES, A_NODE, A_DELAY };
+static int page = OVERVIEW, offset, node_offset, dialog, dialog_feature, dirty, quitting,
+           need_draw = 1, return_after_save;
 static unsigned long long settings_revision;
-static int settings_idle = 120, settings_brightness = 128, settings_home = MENU, settings_menu = 27;
-static int visible_page(int p) { return p == MENU || (settings_menu & (1 << p)); }
+static int settings_idle = 120, settings_brightness = 128, settings_home = OVERVIEW, settings_menu = 6;
+static int visible_page(int p) {
+  if (p == SB || p == SB_NODES || p == SB_PROFILES || p == SB_DEVICES) return (settings_menu & (1 << SB)) != 0;
+  if (p == WG || p == WG_PROFILES || p == WG_DEVICES) return (settings_menu & (1 << WG)) != 0;
+  return 1;
+}
 static int update_settings(const struct snapshot *s) {
   if (!s->settings_rev || s->settings_rev == settings_revision) return 0;
   int result = settings_revision ? 1 : 2;
@@ -89,6 +107,7 @@ static int update_settings(const struct snapshot *s) {
   return result;
 }
 static unsigned long long pending, pending_revision, chosen_profile, chosen_revision;
+static int pending_feature; /* 0 WireGuard, 1 sing-box, 2 node action (no revision) */
 static char chosen_name[193];
 static char notice[128];
 static long long monotonic_ms(void) {
@@ -127,7 +146,7 @@ static void rotate_frame(struct drm_buf *b) {
   }
 }
 static int parse_snapshot(char *buf, struct snapshot *out) {
-  struct snapshot s = {.battery = -1, .temperature = -999, .memory = -1};
+  struct snapshot s = {.battery = -1, .temperature = -999, .memory = -1, .node_now = -1};
   char *save, *line = strtok_r(buf, "\n", &save);
   int valid = 0;
   while (line) {
@@ -140,8 +159,8 @@ static int parse_snapshot(char *buf, struct snapshot *out) {
       unsigned long long rev; int idle, level, home, mask;
       if (sscanf(line, "C %llu %d %d %d %d", &rev, &idle, &level, &home, &mask) == 5 &&
           idle >= 30 && idle <= 600 && level >= 20 && level <= 255 &&
-          home >= 0 && home <= 4 && mask > 0 && !(mask & ~27) &&
-          (home == MENU || (mask & (1 << home)))) {
+          home >= OVERVIEW && home <= WG && mask >= 0 && !(mask & ~6) &&
+          (home == OVERVIEW || (mask & (1 << home)))) {
         s.settings_rev = rev; s.idle_seconds = idle; s.brightness = level;
         s.home_page = home; s.menu_mask = mask;
       }
@@ -149,7 +168,37 @@ static int parse_snapshot(char *buf, struct snapshot *out) {
     else if (line[0] == 'J')
       sscanf(line, "J %d %llu %llu %d", &s.busy, &s.job, &s.done, &s.result);
     else if (line[0] == 'O')
-      sscanf(line, "O %d %d %llu %lf %lf", &s.battery, &s.temperature, &s.uptime, &s.memory, &s.cpu);
+      sscanf(line, "O %d %d %llu %lf %lf %d", &s.battery, &s.temperature, &s.uptime, &s.memory, &s.cpu, &s.charging);
+    else if (line[0] == 'B')
+      s.sb_ok = sscanf(line, "B %llu %d %d %d %d %d %d %d %llu %llu %llu %llu", &s.sb_rev, &s.sb_installed,
+                       &s.sb_enabled, &s.sb_running, &s.sb_ready, &s.sb_starting, &s.sb_error, &s.sb_all,
+                       &s.sb_rx, &s.sb_tx, &s.sb_uptime, &s.sb_memory) == 12;
+    else if (line[0] == 'Q' && s.nq < 5) {
+      struct profile *p = &s.sb_profiles[s.nq];
+      if (sscanf(line, "Q\t%llu\t%d\t%c\t%d\t%192[^\n]", &p->id, &p->active, &p->source, &p->nodes, p->name) == 5 && p->id)
+        s.nq++;
+    }
+    else if (line[0] == 'M')
+      sscanf(line, "M\t%llu\t%d\t%192[^\n]", &s.node_ver, &s.node_now, s.group);
+    else if ((line[0] == 'G' || (line[0] == 'N' && s.nn < MAX_NODES)) && line[1] == '\t') {
+      /* Tab-separated text fields; empty fields are sent as "-". */
+      char *sv, *f = strtok_r(line, "\t", &sv), *fields[4] = {0};
+      int i = 0;
+      while (i < 4 && (f = strtok_r(NULL, "\t", &sv))) fields[i++] = f;
+      if (i == 4 && line[0] == 'G') {
+        s.sig_ok = 1;
+        snprintf(s.sig_type, sizeof(s.sig_type), "%s", fields[0]);
+        s.sig_bars = atoi(fields[1]); if (s.sig_bars < 0 || s.sig_bars > 5) s.sig_bars = 0;
+        s.sig_rsrp = strcmp(fields[2], "-") ? atoi(fields[2]) : 0;
+        snprintf(s.sig_operator, sizeof(s.sig_operator), "%s", fields[3]);
+      } else if (i == 4) {
+        struct node *n = &s.nodes[s.nn++];
+        n->delay = atoi(fields[0]);
+        snprintf(n->type, sizeof(n->type), "%s", fields[1]);
+        snprintf(n->pick, sizeof(n->pick), "%s", fields[2]);
+        snprintf(n->name, sizeof(n->name), "%s", fields[3]);
+      }
+    }
     else if (line[0] == 'P' && s.np < 5) {
       struct profile *p = &s.profiles[s.np];
       if (sscanf(line, "P\t%llu\t%d\t%192[^\n]", &p->id, &p->active, p->name) == 3 && p->id)
@@ -176,9 +225,12 @@ static int parse_snapshot(char *buf, struct snapshot *out) {
         case 4:
           snprintf(r->name, sizeof(r->name), "%s", p);
           break;
+        case 5:
+          r->sb = atoi(p) != 0;
+          break;
         }
       }
-      if (i == 5 && strlen(r->mac) == 17)
+      if ((i == 5 || i == 6) && strlen(r->mac) == 17)
         s.n++;
     }
     line = strtok_r(NULL, "\n", &save);
@@ -220,32 +272,42 @@ static int exchange(const char *r, char *out, size_t cap) {
   return 0;
 }
 #endif
-static void submit(int toggle, int value) {
+/* WireGuard actions use plain names; sing-box ones the "sb-" prefix. Nodes are
+ * addressed by index within the versioned list the agent last projected. */
+static void submit(int what, int sb, int value) {
   char req[4096], reply[128];
   if (blocked())
     return;
-  if (toggle == 2)
-    snprintf(req, sizeof(req), "profile %llu %llu\n", chosen_revision, chosen_profile);
-  else if (toggle)
-    snprintf(req, sizeof(req), "toggle %llu %d\n", data.rev, value);
+  const char *prefix = sb ? "sb-" : "";
+  unsigned long long rev = sb ? data.sb_rev : data.rev;
+  if (what == A_TOGGLE)
+    snprintf(req, sizeof(req), "%stoggle %llu %d\n", prefix, rev, value);
+  else if (what == A_PROFILE)
+    snprintf(req, sizeof(req), "%sprofile %llu %llu\n", prefix, chosen_revision, chosen_profile);
+  else if (what == A_NODE)
+    snprintf(req, sizeof(req), "sb-node %llu %d\n", data.node_ver, value);
+  else if (what == A_DELAY)
+    snprintf(req, sizeof(req), "sb-delay %llu 0\n", data.node_ver);
   else {
-    size_t n = (size_t)snprintf(req, sizeof(req), "devices %llu ", draft.rev);
+    rev = sb ? draft.sb_rev : draft.rev;
+    size_t n = (size_t)snprintf(req, sizeof(req), "%sdevices %llu ", prefix, rev);
     int count = 0;
     for (int i = 0; i < draft.n; i++) {
       // Send all draft entries on version conflict; agent rejects the stale
       // revision atomically.
       n += (size_t)snprintf(req + n, sizeof(req) - n, "%s%s=%d",
                             count++ ? "," : "", draft.rows[i].mac,
-                            draft.rows[i].selected);
+                            sb ? draft.rows[i].sb : draft.rows[i].selected);
     }
     if (!count) {
       dirty = 0;
-      page = WG;
+      page = sb ? SB : WG;
       return;
     }
     snprintf(req + n, sizeof(req) - n, "\n");
   }
-  pending_revision = toggle == 2 ? chosen_revision : toggle ? data.rev : draft.rev;
+  pending_feature = what >= A_NODE ? 2 : sb;
+  pending_revision = what == A_PROFILE ? chosen_revision : rev;
   if (exchange(req, reply, sizeof(reply)) == 0 &&
       sscanf(reply, "OK %llu", &pending) == 1) {
     dialog = 0;
@@ -543,7 +605,7 @@ static int input_self_test(void) {
   power_self_test();
   struct drm_buf frame = {.pitch = W * 2, .map = calloc(W * H, 2)};
   assert(frame.map);
-  page = MENU;
+  page = OVERVIEW;
   render(&frame);
   int x = 0, y = 0;
   rotate_point(&x, &y);
@@ -614,7 +676,7 @@ static int input_self_test(void) {
   return 0;
 }
 static int panel(int heartbeat, int idle_seconds) {
-  page = MENU;
+  page = OVERVIEW;
   struct qpic_ctx drm;
   struct input_touch input;
   int result = 1;
@@ -656,14 +718,16 @@ static int panel(int heartbeat, int idle_seconds) {
           if (changed) {
             on_level = settings_brightness;
             if (screen_awake && !first && old_brightness != on_level) brightness(on_level);
-            if (changed == 2) { page = settings_home; if (page == DEVICES) enter_devices(); }
+            if (changed == 2) go(settings_home);
           }
-          if (page == DEVICES && !dirty && !pending && !dialog) {
+          if ((page == SB_DEVICES || page == WG_DEVICES) && !dirty && !pending && !dialog) {
             draft = data;
-            for (int i = 0; i < draft.n; i++) original_selection[i] = draft.rows[i].selected;
+            for (int i = 0; i < draft.n; i++)
+              original_selection[i] = page == SB_DEVICES ? draft.rows[i].sb : draft.rows[i].selected;
             if (offset >= draft.n) offset = 0;
           }
-          if (!visible_page(page) && !dirty && !pending && !dialog) page = MENU;
+          if (page == SB_NODES && node_offset >= data.nn) node_offset = 0;
+          if (!visible_page(page) && !dirty && !pending && !dialog) page = OVERVIEW;
           need_draw = 1;
           if (pending && data.done >= pending) {
             if (data.result) {
@@ -671,16 +735,17 @@ static int panel(int heartbeat, int idle_seconds) {
               strcpy(notice, data.result == 1 ? "Settings changed. Refresh."
                                               : "Apply failed. Check OpenUI.");
               dialog = 3;
-            } else if (data.rev > pending_revision) {
+            } else if (pending_feature == 2 ||
+                       (pending_feature ? data.sb_rev : data.rev) > pending_revision) {
               pending = 0;
               dirty = 0;
               notice[0] = 0;
-              if (page == DEVICES) {
+              if (page == SB_DEVICES || page == WG_DEVICES) {
                 draft = data;
                 for (int i = 0; i < draft.n; i++)
-                  original_selection[i] = draft.rows[i].selected;
+                  original_selection[i] = page == SB_DEVICES ? draft.rows[i].sb : draft.rows[i].selected;
                 if (return_after_save)
-                  page = WG;
+                  page = parent_of(page);
               }
               return_after_save = 0;
             }
@@ -896,7 +961,7 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--self-test"))
     return input_self_test();
   if (argc == 2 && !strcmp(argv[1], "--version")) {
-    puts("openui-screen 4 DevUI / live settings / four-press shortcut");
+    puts("openui-screen 5 DevUI / Overview / sing-box / corner shortcut");
     return 0;
   }
   if (argc == 2 && !strcmp(argv[1], "--ipc-check")) {
@@ -964,6 +1029,7 @@ static void press_id(struct drm_buf *b,const char *id) {
   assert(w>=48&&h>=48&&x>=0&&y>=0&&x+w<=W&&y+h<=H);
   tap(x+w/2,y+h/2);
 }
+static int requested(const char *expected) { return !strcmp(test_request, expected); }
 int main(int argc, char **argv) {
   power_self_test();
   if(argc<2)return 2;
@@ -975,56 +1041,100 @@ int main(int argc, char **argv) {
   rotate_frame(&padded);
   assert(padded.map[0]==4&&padded.map[W-1]==3&&padded.map[W]==0x1234);
   rotate_frame(&padded);assert(padded.map[0]==1);free(padded.map);
-  char example[4096];
+  char example[8192];
+  unsigned long long now=(unsigned long long)time(NULL);
   snprintf(example,sizeof(example),
-    "S 7 1 1 1 0 %llu 134217728 25165824 1 %llu\n"
-    "D\t02:11:22:33:44:55\t1\t1\t192.0.2.2\tWork laptop\n"
-    "D\t02:11:22:33:44:56\t0\t1\t192.0.2.3\tiPhone\n"
-    "D\t02:11:22:33:44:57\t1\t0\t-\t-\n"
-    "D\t02:11:22:33:44:58\t0\t0\t-\tWork laptop\n"
-    "D\t02:11:22:33:44:59\t0\t0\t-\t<a href='act:stock'> A very long device name\n"
+    "S 7 1 0 0 0 %llu 0 0 0 %llu\n"
+    "D\t02:11:22:33:44:55\t1\t1\t192.168.0.61\tWork laptop\t1\n"
+    "D\t02:11:22:33:44:56\t0\t1\t192.168.0.62\tiPhone\t1\n"
+    "D\t02:11:22:33:44:57\t0\t0\t-\tliving-room-tv\t0\n"
+    "D\t02:11:22:33:44:58\t0\t1\t192.168.0.65\toffice-pc\t1\n"
+    "D\t02:11:22:33:44:59\t0\t1\t192.168.0.70\t<a href='act:stock'> A very long device name\t0\n"
     "P\t1\t1\tHome VPN\nP\t2\t0\tTravel VPN\nP\t3\t0\tWork VPN\n"
-    "P\t4\t0\tBackup VPN\nP\t5\t0\tA long profile name <a href='act:stock'>\n"
-    "O 83 320 18372 34.5 12.4\nJ 0 0 0 0\n.\n",
-    (unsigned long long)time(NULL)-15,(unsigned long long)time(NULL));
-  assert(parse_snapshot(example,&data));assert(data.n==5&&data.np==5&&data.battery==83);
-  capture(&b,argv[1],"menu");press_id(&b,"overview");assert(page==OVERVIEW);
-  capture(&b,argv[1],"overview");press_id(&b,"back");assert(page==MENU);
-  press_id(&b,"wireguard");assert(page==WG);capture(&b,argv[1],"home");
-  rotate_frame(&b);char path[512];snprintf(path,sizeof(path),"%s/home-panel.ppm",argv[1]);dump(&b,path);
-  press_id(&b,"devices");assert(page==DEVICES);press_id(&b,"d1");assert(dirty&&draft.rows[1].selected);
-  capture(&b,argv[1],"devices");press_id(&b,"next");assert(offset==4);
-  capture(&b,argv[1],"devices-page2");assert(strstr(html,"&lt;a href="));
+    "O 83 352 18372 34.5 12.4 1\n"
+    "G\t5G SA\t4\t-100\tChina Unicom\n"
+    "B 3 1 1 1 1 0 0 1 299067187 41208627 7380 41943040\n"
+    "Q\t1\t1\ts\t5\tAirport\nQ\t2\t0\tf\t2\tSelf-hosted\n"
+    "M\t12345\t1\tProxy\n"
+    "N\t74\tURLTest\tJP 01\tAuto\nN\t86\tVLESS\t-\tHK 01\nN\t112\tHysteria2\t-\tHK 02\n"
+    "N\t74\tShadowsocks\t-\tJP 01\nN\t188\tTrojan\t-\tSG 01\nN\t0\tVMess\t-\tUS 01\nN\t-1\tDirect\t-\tdirect\n"
+    "J 0 0 0 0\n.\n",now-15,now);
+  assert(parse_snapshot(example,&data));
+  assert(data.n==5&&data.np==3&&data.nq==2&&data.nn==7&&data.battery==83&&data.charging);
+  assert(data.sb_ok&&data.sb_ready&&data.node_now==1&&data.node_ver==12345&&data.rows[1].sb&&!data.rows[2].sb);
+  assert(data.sig_ok&&data.sig_bars==4&&data.sig_rsrp==-100&&!strcmp(data.sig_type,"5G SA"));
+  /* Overview hub */
+  capture(&b,argv[1],"overview");
+  assert(strstr(html,"MU5250")&&strstr(html,"5G SA")&&strstr(html,"-100 dBm")&&strstr(html,"China Unicom"));
+  assert(strstr(html,"Running")&&strstr(html,"HK 01")&&strstr(html,"act:singbox")&&strstr(html,"act:wireguard"));
+  /* sing-box page, nodes, profiles, devices */
+  press_id(&b,"singbox");assert(page==SB);capture(&b,argv[1],"singbox");
+  press_id(&b,"nodes");assert(page==SB_NODES&&node_offset==0);capture(&b,argv[1],"nodes");
+  test_request[0]=0;press_id(&b,"n1");assert(!test_request[0]); /* current node */
+  press_id(&b,"n2");assert(requested("sb-node 12345 2\n")&&pending==1&&pending_feature==2);pending=0;
+  press_id(&b,"nnext");assert(node_offset==4);capture(&b,argv[1],"nodes-page2");
+  assert(strstr(html,"timeout"));
+  press_id(&b,"test");assert(requested("sb-delay 12345 0\n"));pending=0;
+  press_id(&b,"back");assert(page==SB);
+  press_id(&b,"sbprofiles");assert(page==SB_PROFILES);capture(&b,argv[1],"sb-profiles");
+  press_id(&b,"p1");assert(dialog==4&&dialog_feature==1&&chosen_profile==2&&chosen_revision==3);
+  capture(&b,argv[1],"sb-profile-confirm");press_id(&b,"confirm");assert(requested("sb-profile 3 2\n"));
+  pending=0;dialog=0;press_id(&b,"back");assert(page==SB);
+  press_id(&b,"sbdevices");assert(page==SB_DEVICES);press_id(&b,"d1");assert(dirty&&!draft.rows[1].sb);
+  capture(&b,argv[1],"sb-devices");press_id(&b,"save");
+  assert(!strncmp(test_request,"sb-devices 3 ",13)&&strstr(test_request,"02:11:22:33:44:56=0")&&strstr(test_request,"02:11:22:33:44:55=1"));
+  pending=0;dirty=0;page=SB;
+  press_id(&b,"sbtoggle");assert(dialog==1&&dialog_feature==1);capture(&b,argv[1],"sb-confirm");
+  press_id(&b,"confirm");assert(requested("sb-toggle 3 0\n"));pending=0;dialog=0;
+  press_id(&b,"back");assert(page==OVERVIEW);
+  /* WireGuard: mutually exclusive with a running sing-box */
+  press_id(&b,"wireguard");assert(page==WG);capture(&b,argv[1],"wireguard-sb-on");
+  test_request[0]=0;press_id(&b,"toggle");assert(!test_request[0]&&!dialog);
+  data.sb_enabled=0;data.enabled=1;data.connected=1;data.all=1;data.rx=134217728;data.tx=25165824;
+  capture(&b,argv[1],"wireguard");
+  press_id(&b,"devices");assert(page==WG_DEVICES);press_id(&b,"d1");assert(dirty&&draft.rows[1].selected);
+  capture(&b,argv[1],"wg-devices");press_id(&b,"next");assert(offset==4);
+  capture(&b,argv[1],"wg-devices-page2");assert(strstr(html,"&lt;a href="));
   press_id(&b,"prev");assert(offset==0);press_id(&b,"back");assert(dialog==2);
-  capture(&b,argv[1],"unsaved");press_id(&b,"saveback");assert(strstr(test_request,"devices 7 ")&&pending==1);
+  capture(&b,argv[1],"unsaved");press_id(&b,"saveback");assert(!strncmp(test_request,"devices 7 ",10)&&pending==1);
   pending=0;dirty=0;dialog=0;page=WG;
-  press_id(&b,"toggle");assert(dialog==1);capture(&b,argv[1],"confirm");press_id(&b,"confirm");
-  assert(!strcmp(test_request,"toggle 7 0\n"));pending=0;dialog=0;
-  press_id(&b,"profiles");assert(page==PROFILES);capture(&b,argv[1],"profiles");
-  press_id(&b,"p4");assert(chosen_profile==5&&chosen_revision==7&&dialog==4);
-  capture(&b,argv[1],"profile-confirm");data.rev=8;
-  press_id(&b,"confirm");assert(!strcmp(test_request,"profile 7 5\n"));
+  press_id(&b,"toggle");assert(dialog==1&&dialog_feature==0);capture(&b,argv[1],"wg-confirm");press_id(&b,"confirm");
+  assert(requested("toggle 7 0\n"));pending=0;dialog=0;
+  press_id(&b,"profiles");assert(page==WG_PROFILES);capture(&b,argv[1],"wg-profiles");
+  press_id(&b,"p2");assert(chosen_profile==3&&chosen_revision==7&&dialog==4&&dialog_feature==0);
+  data.rev=8;press_id(&b,"confirm");assert(requested("profile 7 3\n"));
   pending=0;dialog=3;strcpy(notice,"Settings changed. Refresh.");capture(&b,argv[1],"conflict");
   press_id(&b,"refresh");assert(page==WG&&!dirty&&!dialog);
-  data.has=0;data.enabled=0;data.connected=0;capture(&b,argv[1],"unconfigured");
+  data.has=0;data.enabled=0;data.connected=0;capture(&b,argv[1],"wg-unconfigured");
   test_request[0]=0;press_id(&b,"toggle");assert(!test_request[0]);
-  data.has=1;capture(&b,argv[1],"off");
-  data.enabled=1;data.handshake=0;capture(&b,argv[1],"waiting");
-  data.error=1;capture(&b,argv[1],"error");data.error=0;
-  data.stamp=(unsigned long long)time(NULL)-20;capture(&b,argv[1],"stale");
-  press_id(&b,"toggle");assert(!test_request[0]);
-  char settings_line[]="C 3 60 200 4 16\n.\n";
-  struct snapshot prefs; assert(parse_snapshot(settings_line,&prefs));
-  assert(update_settings(&prefs)==2 && settings_idle==60 && settings_brightness==200 && settings_home==OVERVIEW);
-  assert(!update_settings(&prefs));
-  page=MENU;capture(&b,argv[1],"menu-custom");
-  assert(strstr(html,"act:overview") && !strstr(html,"act:wireguard"));
-  press_id(&b,"overview");assert(page==OVERVIEW);press_id(&b,"wireguard");assert(page==OVERVIEW);
-  data.battery=12;capture(&b,argv[1],"battery-low");assert(strstr(html,"12%") && strstr(html,"#ff9999"));
+  data.has=1;data.enabled=1;data.handshake=0;data.connected=0;capture(&b,argv[1],"wg-waiting");
+  data.stamp=now-20;capture(&b,argv[1],"wg-stale");press_id(&b,"toggle");assert(!test_request[0]);
+  data.stamp=now;data.enabled=0;
+  /* sing-box states */
+  page=SB;data.sb_enabled=0;capture(&b,argv[1],"singbox-off");
+  data.enabled=1;capture(&b,argv[1],"singbox-wg-on");
+  test_request[0]=0;press_id(&b,"sbtoggle");assert(!test_request[0]);data.enabled=0;
+  data.sb_enabled=1;data.sb_ready=0;data.sb_starting=1;capture(&b,argv[1],"singbox-starting");
+  /* Overview states */
+  page=OVERVIEW;data.battery=12;data.charging=0;capture(&b,argv[1],"overview-low");
+  assert(strstr(html,"12%")&&strstr(html,"#ff9999")&&strstr(html,"Starting..."));
+  snprintf(data.sig_type,sizeof(data.sig_type),"-");data.sig_bars=0;data.sb_enabled=0;data.sb_starting=0;
+  data.enabled=1;data.connected=1;data.handshake=now-15;capture(&b,argv[1],"overview-nosignal");
+  assert(strstr(html,"No signal")&&strstr(html,"No service"));
   data.battery=-1;capture(&b,argv[1],"battery-unknown");assert(strstr(html,"--%"));
+  /* Settings: startup page and Overview entries */
+  char settings_line[]="C 3 60 200 1 2\n.\n";
+  struct snapshot prefs; assert(parse_snapshot(settings_line,&prefs));
+  assert(update_settings(&prefs)==2 && settings_idle==60 && settings_brightness==200 && settings_home==SB);
+  assert(!update_settings(&prefs));
+  page=OVERVIEW;capture(&b,argv[1],"overview-custom");
+  assert(strstr(html,"act:singbox") && !strstr(html,"act:wireguard"));
+  page=WG;go(WG);assert(page==OVERVIEW); /* hidden gateway */
   char bad_settings[]="C 4 0 0 4 99\n.\n";assert(!parse_snapshot(bad_settings,&prefs));
-  page=MENU;press_id(&b,"stock");assert(quitting);
-  free(b.map);puts("PASS DevUI HTML hit testing, menu navigation, profile version capture, device pagination/drafts, escaping, confirmations, disabled states and rotation");
+  char hidden[]="C 5 120 128 0 0\n.\n";assert(parse_snapshot(hidden,&prefs)&&update_settings(&prefs));
+  capture(&b,argv[1],"overview-no-gateways");assert(!strstr(html,"GATEWAYS"));
+  page=OVERVIEW;press_id(&b,"stock");assert(quitting);
+  free(b.map);puts("PASS DevUI Overview hub, sing-box status/nodes/profiles/devices, WireGuard exclusivity, versioned requests, drafts, escaping, settings and rotation");
   return 0;
 }
 #endif

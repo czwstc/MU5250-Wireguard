@@ -7,7 +7,7 @@ whose singleton ubus object makes a second UCI instance unreliable.
 
 ## Layout
 
-Five navigation groups — bottom tab bar on phones, sidebar on desktop,
+Eight navigation groups — bottom tab bar on phones, sidebar on desktop (headed **MU5250**),
 light/dark theme (auto + manual), each group lazy-loaded:
 
 | Group | Contents |
@@ -15,7 +15,10 @@ light/dark theme (auto + manual), each group lazy-loaded:
 | **Home** | signal, modem mode, throughput, battery, connection, device, data usage — backed by the single batched `/api/dashboard` poll |
 | **Signal** | per-carrier LTE/NR detail (PCI, ARFCN, RSRP/RSRQ/SINR) + network mode, band lock, one-tap cell lock from live cells |
 | **Network** | clients by Wi-Fi/USB-C/Ethernet with link details, per-band Wi-Fi configuration, LAN/DHCP and DNS |
+| **WireGuard** | saved tunnel profiles, tunnel status and MAC-based device routing — see [WIREGUARD.md](WIREGUARD.md) |
+| **sing-box** | imported configurations and subscriptions, version/status, node selection with latency tests, device routing and recent logs — see [SINGBOX.md](SINGBOX.md) |
 | **Modem** | APN profiles (with carrier presets), data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
+| **DevUI** | touchscreen panel controls and preferences — see [SCREEN.md](SCREEN.md) |
 | **System** | thermals, battery health, charge control, signal/connection loggers, AT console, on-demand process list, device/SIM info, USB mode + powerbank, power actions |
 
 The agent exposes exactly what these screens use and nothing else — the
@@ -39,7 +42,9 @@ web-app/src/
   features/
     home/            Overview — single batched /api/dashboard poll
     signal/          Overview + Mode & Locking
-    network/         Clients + Wi-Fi + Router
+    network/         Clients + Wi-Fi + Router; WireGuard page
+    singbox/         sing-box page
+    devui/           DevUI screen page
     modem/           APN + Data + TTL + SMS
     system/          Metrics + Tools + Settings
 ```

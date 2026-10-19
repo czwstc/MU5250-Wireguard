@@ -437,18 +437,89 @@ export interface WireGuardUpdate {
   config_text?: string
 }
 
-export type DevUIPageId = 'overview' | 'wireguard' | 'profiles' | 'devices'
+export interface SingBoxProfile {
+  id: number
+  name: string
+  source: 'file' | 'subscription'
+  /** Subscription host only; the full link is never returned. */
+  host: string | null
+  nodes: number
+  updated: number
+}
+export type SingBoxProfileAction =
+  | { action: 'save'; name: string; config_text: string }
+  | { action: 'subscribe'; name: string; url: string }
+  | { action: 'refresh'; id: number }
+  | { action: 'activate'; id: number }
+  | { action: 'rename'; id: number; name: string }
+  | { action: 'delete'; id: number }
+export interface SingBoxStatus {
+  profiles: SingBoxProfile[]
+  active_profile: number | null
+  max_profiles: number
+  revision: number
+  enabled: boolean
+  mode: 'all' | 'selected'
+  macs: string[]
+  has_config: boolean
+  binary_installed: boolean
+  version: string | null
+  /** Kernel TUN and the iptables REDIRECT target are available. */
+  kernel_supported: boolean
+  running: boolean
+  pid: number | null
+  uptime: number
+  memory_rss: number
+  /** The TUN interface exists and the TCP redirect listener accepts connections. */
+  ready: boolean
+  /** The process runs but its listener is not open yet (e.g. downloading rule sets). */
+  starting: boolean
+  healthy: boolean
+  rx_bytes: number
+  tx_bytes: number
+  error: string | null
+  wireguard_enabled: boolean
+  ipv6_policy: string
+}
+export interface SingBoxUpdate {
+  expected_revision: number
+  profile?: SingBoxProfileAction
+  enabled?: boolean
+  mode?: 'all' | 'selected'
+  macs?: string[]
+}
+export interface SingBoxNode {
+  name: string
+  type: string | null
+  /** Last measured latency in ms; 0 means the test failed, null means untested. */
+  delay: number | null
+}
+export interface SingBoxGroup {
+  name: string
+  type: string
+  now: string | null
+  selectable: boolean
+  options: SingBoxNode[]
+}
+export interface SingBoxProxies {
+  running: boolean
+  groups: SingBoxGroup[]
+}
+
+/** Gateway entries on the device screen's Overview page. */
+export type DevUIPageId = 'singbox' | 'wireguard'
 export interface DevUISettings {
   revision: number
   shortcut_enabled: boolean
+  corner_shortcut_enabled: boolean
   brightness: number
   idle_seconds: number
-  home_page: 'menu' | DevUIPageId
+  home_page: 'overview' | DevUIPageId
   menu_items: DevUIPageId[]
 }
 export interface ScreenStatus {
   settings_revision: number
-  shortcut: { available: boolean; message: string }
+  shortcut: { available: boolean; message: string; corner?: { available: boolean; message: string } }
 
   available: boolean
   verified: boolean

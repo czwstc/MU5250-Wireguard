@@ -16,6 +16,7 @@ use crate::router;
 use crate::screen;
 use crate::signal_logger;
 use crate::sim;
+use crate::singbox;
 use crate::sms;
 use crate::usb;
 use crate::wifi;
@@ -321,6 +322,12 @@ pub fn route(
         (&Method::Delete, "/api/screen") => screen::close(),
         (&Method::Get, "/api/wireguard") => wireguard::get(),
         (&Method::Put, "/api/wireguard") => wireguard::update(body),
+        (&Method::Get, "/api/singbox") => singbox::get(),
+        (&Method::Put, "/api/singbox") => singbox::update(body),
+        (&Method::Get, "/api/singbox/proxies") => singbox::proxies(),
+        (&Method::Put, "/api/singbox/proxies") => singbox::select(body),
+        (&Method::Post, "/api/singbox/delay") => singbox::delay(body),
+        (&Method::Get, "/api/singbox/logs") => singbox::logs(),
         (&Method::Post, "/api/system/kill-bloat") => handlers::system_kill_bloat(state, body),
         (&Method::Post, "/api/system/restart-agent") => device_ext::agent_restart(state),
         (&Method::Post, "/api/device/reboot") => device_ext::device_reboot(state),

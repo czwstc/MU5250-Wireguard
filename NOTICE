@@ -21,3 +21,8 @@ and screen/FONT-COPYING. Dependencies retain their own respective licenses.
 
 The DevUI renderer is adapted from 33333s/u60pro-devui (MIT); its copyright
 and dependency licenses are preserved in screen/THIRD-PARTY-LICENSES.
+
+The offline bundle includes the unmodified official sing-box release binary
+(GPL-3.0-or-later; https://github.com/SagerNet/sing-box), run as a separate
+program by the agent. See licenses/sing-box-LICENSE.txt and
+licenses/device-components.txt. This project is not affiliated with sing-box.

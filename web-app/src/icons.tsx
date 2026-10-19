@@ -204,6 +204,13 @@ export const IDatabase = make(
     <path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" />
   </>,
 )
+export const IRoute = make(
+  <>
+    <circle cx={6} cy={19} r={2.2} />
+    <circle cx={18} cy={5} r={2.2} />
+    <path d="M8.2 19H15a3.5 3.5 0 0 0 0-7H9a3.5 3.5 0 0 1 0-7h6.8" />
+  </>,
+)
 export const IShield = make(<path d="M12 3 5 5.8v5.4c0 4.3 3 7.9 7 9.8 4-1.9 7-5.5 7-9.8V5.8L12 3Z" />)
 export const IMoon = make(<path d="M20 13.5A8 8 0 0 1 10.5 4 8 8 0 1 0 20 13.5Z" />)
 export const ISun = make(

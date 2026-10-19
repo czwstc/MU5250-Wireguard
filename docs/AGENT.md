@@ -19,7 +19,7 @@ canonical routing table; this document summarizes it.
 
 Every route below has a dashboard consumer, and every call the dashboard makes
 is a route below — `scripts/check-api-contract.py` enforces both directions
-(plus that the mock agent stays in step). 55 paths / 60 method+path pairs.
+(plus that the mock agent stays in step). 66 paths / 77 method+path pairs.
 
 | Family | Endpoints |
 |---|---|
@@ -37,6 +37,7 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
 | SIM | `GET /api/sim/info`, `/api/sim/imei` |
 | USB | `GET /api/usb/status`, `PUT /api/usb/mode`, `/api/usb/default`, `/api/usb/powerbank` |
 | Power | `GET+PUT /api/device/charge-control` — manual stop/resume + limit enforcer with hysteresis, event-driven off `BSP_CHARGER_EVENT` |
+| Gateways | `GET+PUT /api/wireguard` ([WIREGUARD.md](WIREGUARD.md)); `GET+PUT /api/singbox`, `GET+PUT /api/singbox/proxies`, `POST /api/singbox/delay`, `GET /api/singbox/logs` ([SINGBOX.md](SINGBOX.md)). The two gateways are mutually exclusive |
 | Extras | TTL clamping (`GET /api/ttl/status`, `PUT /api/ttl/set`, `DELETE /api/ttl/clear`), AT console (`POST /api/at/send`, `GET /api/at/port`), signal/connection CSV loggers (`/api/logger/*`) |
 
 ## Architecture notes
